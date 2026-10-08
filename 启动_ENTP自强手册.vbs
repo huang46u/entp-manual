@@ -5,6 +5,9 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 
 appDir = fso.GetParentFolderName(WScript.ScriptFullName)
+shell.Environment("PROCESS")("TEMP") = appDir & "\.runtime\tmp"
+shell.Environment("PROCESS")("TMP") = appDir & "\.runtime\tmp"
+shell.Environment("PROCESS")("PYTHONPYCACHEPREFIX") = appDir & "\.cache\pycache"
 pythonw = appDir & "\.venv\Scripts\pythonw.exe"
 
 If Not fso.FileExists(appDir & "\launcher_flet.pyw") Then

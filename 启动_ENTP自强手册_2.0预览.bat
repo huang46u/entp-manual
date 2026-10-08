@@ -2,6 +2,7 @@
 chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
+call "%~dp0workspace-env.cmd"
 
 if not exist ".venv\Scripts\python.exe" (
   echo Flet 运行环境尚未安装。

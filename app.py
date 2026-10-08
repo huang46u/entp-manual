@@ -15,6 +15,10 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Callable
 
+from workspace_runtime import configure_workspace
+
+configure_workspace()
+
 VENDOR_DIR = Path(__file__).with_name("vendor")
 if VENDOR_DIR.exists():
     sys.path.insert(0, str(VENDOR_DIR))

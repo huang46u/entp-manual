@@ -6,9 +6,12 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from workspace_runtime import configure_workspace
+
+configure_workspace()
 
 ROOT = Path(__file__).resolve().parent
-LOGS = ROOT / "logs"
+LOGS = ROOT / "data" / "logs"
 
 
 def emergency_log(message: str) -> None:

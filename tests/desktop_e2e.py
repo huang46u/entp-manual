@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import traceback
 from dataclasses import dataclass, asdict
 from datetime import date, timedelta
@@ -597,6 +598,11 @@ class DesktopE2ERunner:
         )
         self.ui.show_view(self.ui.NAV_CURRENT)
         assert self.ui.quick_task_input in set(_walk(self.ui.content_switcher.content))
+        if os.environ.get("ENTP_WORKSPACE_LOCAL") == "1":
+            assert self.ui.update_button.content.startswith("本地源码版")
+            assert self.ui.update_button.disabled
+            assert not self.ui.enable_update_checks
+            return "备份、新建主线和 Markdown 入口可发现；workspace 源码版禁用安装包升级"
         assert self.ui.update_button.content.startswith("检查更新")
         return "备份、新建主线、对象 Markdown 和 GitHub 更新入口均可发现"
 

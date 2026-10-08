@@ -5,6 +5,9 @@ Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 projectDir = fso.GetParentFolderName(WScript.ScriptFullName)
+shell.Environment("PROCESS")("TEMP") = projectDir & "\.runtime\tmp"
+shell.Environment("PROCESS")("TMP") = projectDir & "\.runtime\tmp"
+shell.Environment("PROCESS")("PYTHONPYCACHEPREFIX") = projectDir & "\.cache\pycache"
 pythonw = projectDir & "\.venv\Scripts\pythonw.exe"
 launcher = projectDir & "\launcher_flet.pyw"
 

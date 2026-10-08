@@ -15,6 +15,10 @@ import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from workspace_runtime import configure_workspace
+
+configure_workspace()
+
 import flet as ft
 from flet_quill_editor import FletQuillEditor
 
@@ -1043,7 +1047,11 @@ class EntpFletApp:
             tooltip="从 GitHub Releases 检查并安装新版本",
             on_click=self.handle_update_button,
             style=ft.ButtonStyle(color=MUTED),
+            disabled=os.environ.get("ENTP_WORKSPACE_LOCAL") == "1",
         )
+        if os.environ.get("ENTP_WORKSPACE_LOCAL") == "1":
+            self.update_button.content = f"本地源码版 · {APP_VERSION}"
+            self.update_button.tooltip = "此部署通过源码更新，数据保存在当前 workspace"
         return ft.NavigationRail(
             extended=True,
             min_width=82,
@@ -5187,6 +5195,7 @@ class EntpFletApp:
             selected_path = await self.file_picker.save_file(
                 dialog_title="导出 ENTP 完整备份",
                 file_name=default_backup_name(),
+                initial_directory=str(ROOT / "backups"),
                 file_type=ft.FilePickerFileType.CUSTOM,
                 allowed_extensions=["zip"],
             )
@@ -5575,6 +5584,7 @@ def main() -> None:
                 start_hidden=args.start_hidden,
                 enable_update_checks=(
                     not qa_mode
+                    and os.environ.get("ENTP_WORKSPACE_LOCAL") != "1"
                     and not INTERNAL_DEMO_BUILD
                     and args.db.resolve() == DEFAULT_DB.resolve()
                 ),

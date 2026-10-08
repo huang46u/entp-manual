@@ -1,6 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+call "%~dp0workspace-env.cmd"
 
 set "APP_DIR=%CD%"
 set "FLET_PY=%APP_DIR%\.venv\Scripts\python.exe"
