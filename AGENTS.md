@@ -8,6 +8,13 @@
 - Reading existing programs and credentials from C: is allowed. Do not install dependencies there.
 - Preserve the portable deployment's storage configuration when updating the project.
 
+## Testing
+
+- When adding a new feature, prioritize focused tests for that feature and the behavior directly affected by the change.
+- Do not run the full test suite or full regression checks unless the user explicitly requests them.
+- Once focused checks pass, do not expand testing to unrelated features. Report which checks were run and any relevant limitations.
+- For documentation-only changes, review the diff; do not run application tests.
+
 ## Git workflow
 
 - The user's fork is `origin`: `git@github.com:huang46u/entp-manual.git`.
