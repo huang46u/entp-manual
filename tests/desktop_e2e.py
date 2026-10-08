@@ -658,6 +658,45 @@ class DesktopE2ERunner:
         assert self.ui.db.get_thought(thought_id)["status"] == "未审视"
         return "灵感一键归档后离开候审看板，并可从独立回收站一键恢复"
 
+    def _delete_task_with_backup(self) -> str:
+        parent = self.ui.db.create_task(self.ui.current_mid, "E2E 删除任务", is_today=True)
+        child = self.ui.db.create_task(self.ui.current_mid, "E2E 删除子任务", parent_task_id=parent)
+        self.ui._sync_markdown()
+        captured = []
+        original_show_dialog = self.page.show_dialog
+
+        def capture_dialog(dialog):
+            captured.append(dialog)
+            original_show_dialog(dialog)
+
+        self.page.show_dialog = capture_dialog
+        try:
+            self.ui.select_task(parent)
+            detail = captured[-1]
+            self.ui._protect_control_tree(detail)
+            delete = _find(detail, ft.IconButton, tooltip="删除任务")
+            delete.on_click(SimpleNamespace(control=delete))
+            confirmation = captured[-1]
+            self.ui._protect_control_tree(confirmation)
+            assert confirmation.modal
+            assert "1 个子任务" in confirmation.content.value
+            _find(confirmation, ft.TextButton, content="取消").on_click(None)
+            assert self.ui.db.get_task(parent) is not None
+            self.ui.request_delete_task(parent)
+            confirmation = captured[-1]
+            self.ui._protect_control_tree(confirmation)
+            _find(confirmation, ft.FilledButton, content="删除任务").on_click(None)
+            assert self.ui.db.get_task(parent) is None
+            assert self.ui.db.get_task(child) is None
+            assert not self.ui.markdown.path_for("task", parent).exists()
+            assert not self.ui.markdown.path_for("task", child).exists()
+            backups = list((self.ui.db.path.parent / "backups").glob(f"删除任务前_{parent}_*.entp.zip"))
+            assert backups
+            assert inspect_backup(backups[-1]).tasks > 0
+            return "详情删除入口、子任务提示、取消、确认、文档清理和可恢复备份均通过"
+        finally:
+            self.page.show_dialog = original_show_dialog
+
     async def run(self) -> dict:
         await self.case("E2E-01", "启动与统一异常边界", self._startup)
         await self.case("E2E-02", "主线创建与切换", self._create_and_switch_mainline)
@@ -684,6 +723,7 @@ class DesktopE2ERunner:
         await self.case("E2E-16", "空输入边界", self._empty_input_guards)
         await self.case("E2E-17", "可发现的核心入口", self._visible_entry_points)
         await self.case("E2E-18", "灵感归档回收站", self._idea_archive_recycle_bin)
+        await self.case("E2E-21", "任务删除与自动备份", self._delete_task_with_backup)
         total, missing = self.ui.interaction_boundary_audit()
         coverage_gaps = [
             {

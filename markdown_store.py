@@ -90,6 +90,19 @@ class MarkdownStore:
         parts = [body.rstrip(), *missing]
         return "\n\n".join(part for part in parts if part).strip()
 
+    def remove_task_documents(self, task_ids: Iterable[int]) -> None:
+        """Remove only the deleted tasks' managed documents and attachments."""
+        root = self.root.resolve()
+        for task_id in task_ids:
+            document = self.path_for("task", task_id)
+            assets = self.root / "_assets" / "task" / f"T{int(task_id):04d}"
+            for path in (document, assets):
+                if not path.resolve().is_relative_to(root):
+                    raise ValueError("任务文件路径超出 Markdown 工作区")
+            document.unlink(missing_ok=True)
+            if assets.exists():
+                shutil.rmtree(assets)
+
     def read(self, kind: str, object_id: int) -> str:
         path = self.path_for(kind, object_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""

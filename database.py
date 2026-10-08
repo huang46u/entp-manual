@@ -32,6 +32,7 @@ class Database:
         *,
         seed_on_empty: bool = True,
         internal_demo: bool = False,
+        personal_workspace: bool = False,
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,7 +43,9 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA busy_timeout = 2000")
         self._create_schema()
-        if internal_demo and not self.row("SELECT 1 FROM mainlines LIMIT 1"):
+        if personal_workspace:
+            self.initialize_personal_workspace()
+        elif internal_demo and not self.row("SELECT 1 FROM mainlines LIMIT 1"):
             # Import locally to keep the database module usable without demo
             # content and to avoid a module-level dependency cycle.
             from demo_data import populate_internal_demo
@@ -467,6 +470,22 @@ class Database:
                    ELSE status END"""
         )
         self.conn.commit()
+
+    def initialize_personal_workspace(self) -> None:
+        """Create only the structural mainline; never populate personal tasks."""
+        if self.row("SELECT 1 FROM mainlines LIMIT 1"):
+            return
+        with self.conn:
+            cursor = self.conn.execute(
+                "INSERT INTO mainlines(name, vision) VALUES ('我的主线', '')"
+            )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO app_settings(key, value) VALUES ('current_mainline_id', ?)",
+                (str(cursor.lastrowid),),
+            )
+            self.conn.execute(
+                "INSERT INTO mainlines(name, vision, color) VALUES ('收集箱', '', '#8B9099')"
+            )
 
     def _seed_if_empty(self) -> None:
         count = self.conn.execute("SELECT COUNT(*) FROM mainlines").fetchone()[0]
@@ -1032,6 +1051,28 @@ class Database:
                WHERE t.id = ?""",
             (task_id,),
         )
+
+    def delete_task(self, task_id: int) -> list[int]:
+        """Delete a task, its children and dated records in one transaction."""
+        task = self.get_task(task_id)
+        if task is None:
+            return []
+        task_ids = [int(row["id"]) for row in self.rows(
+            "SELECT id FROM tasks WHERE id = ? OR parent_task_id = ? ORDER BY id",
+            (task_id, task_id),
+        )]
+        placeholders = ",".join("?" for _ in task_ids)
+        with self.conn:
+            self.conn.execute(
+                f"DELETE FROM task_events WHERE task_id IN ({placeholders}) "
+                f"OR daily_entry_id IN (SELECT id FROM daily_entries WHERE task_id IN ({placeholders}))",
+                task_ids + task_ids,
+            )
+            self.conn.execute(f"DELETE FROM daily_entries WHERE task_id IN ({placeholders})", task_ids)
+            self.conn.execute(f"DELETE FROM task_execution_logs WHERE task_id IN ({placeholders})", task_ids)
+            self.conn.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids)
+            self._ensure_focus_for_mainline(int(task["mainline_id"]), commit=False)
+        return task_ids
 
     def list_subtasks(self, parent_task_id: int) -> list[sqlite3.Row]:
         """返回父任务的直属子任务；产品只允许一层，不递归查询。"""

@@ -302,6 +302,10 @@ class EntpFletApp:
         self.page.services.append(self.clipboard)
         self.db = Database(
             db_path,
+            personal_workspace=(
+                os.environ.get("ENTP_WORKSPACE_LOCAL") == "1"
+                and db_path.resolve() == DEFAULT_DB.resolve()
+            ),
             internal_demo=(
                 INTERNAL_DEMO_BUILD and db_path.resolve() == DEFAULT_DB.resolve()
             ),
@@ -493,7 +497,11 @@ class EntpFletApp:
             self.page.run_task(self._auto_check_for_updates)
 
     def _configure_page(self) -> None:
-        edition = " · 内部演示" if INTERNAL_DEMO_BUILD else ""
+        edition = (
+            " · 内部演示"
+            if INTERNAL_DEMO_BUILD and os.environ.get("ENTP_WORKSPACE_LOCAL") != "1"
+            else ""
+        )
         self.page.title = f"ENTP 自强手册 {APP_VERSION}{edition}"
         window_icon = RESOURCE_ROOT / "assets" / "app-icon.ico"
         if window_icon.is_file():
@@ -1732,6 +1740,12 @@ class EntpFletApp:
                         overflow=ft.TextOverflow.ELLIPSIS,
                         expand=True,
                     ),
+                    ft.IconButton(
+                        ft.Icons.DELETE_OUTLINE_ROUNDED,
+                        tooltip="删除任务",
+                        icon_color=MUTED,
+                        on_click=lambda _, tid=task_id: self.request_delete_task(tid),
+                    ),
                 ],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -1787,6 +1801,12 @@ class EntpFletApp:
                         max_lines=2,
                         overflow=ft.TextOverflow.ELLIPSIS,
                         expand=True,
+                    ),
+                    ft.IconButton(
+                        ft.Icons.DELETE_OUTLINE_ROUNDED,
+                        tooltip="删除任务",
+                        icon_color=MUTED,
+                        on_click=lambda _, tid=task_id: self.request_delete_task(tid),
                     ),
                 ],
                 spacing=8,
@@ -1868,6 +1888,8 @@ class EntpFletApp:
         def save_fields(_=None) -> None:
             if self._closed or self._exiting:
                 return
+            if self.db.get_task(task_id) is None:
+                return
             # 详情标题允许自动换行显示，但数据库中的标题仍保持单段文本。
             # 这样用户误按回车不会制造难以排序和搜索的多行标题。
             title = " ".join(str(title_field.value or "").split()) or str(task["title"])
@@ -1911,6 +1933,11 @@ class EntpFletApp:
         def make_focus(_) -> None:
             save_fields(None)
             self.set_focus_task(task_id)
+
+        def delete_from_detail(_) -> None:
+            save_fields(None)
+            self.close_task_detail()
+            self.request_delete_task(task_id)
 
         def dismissed(_) -> None:
             save_fields(None)
@@ -1960,6 +1987,12 @@ class EntpFletApp:
                         icon_color=BLUE if focused else MUTED,
                         on_click=make_focus,
                         disabled=completed or is_subtask,
+                    ),
+                    ft.IconButton(
+                        ft.Icons.DELETE_OUTLINE_ROUNDED,
+                        tooltip="删除任务",
+                        icon_color=RED,
+                        on_click=delete_from_detail,
                     ),
                     ft.IconButton(
                         ft.Icons.CLOSE_ROUNDED,
@@ -4156,6 +4189,14 @@ class EntpFletApp:
                         overflow=ft.TextOverflow.ELLIPSIS,
                     ),
                     ft.Row(meta, spacing=5, tight=True),
+                    *([
+                        ft.IconButton(
+                            ft.Icons.DELETE_OUTLINE_ROUNDED,
+                            tooltip="删除任务",
+                            icon_color=MUTED,
+                            on_click=lambda _, tid=task_id: self.request_delete_task(tid),
+                        )
+                    ] if editable and task_id is not None else []),
                 ],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -4595,6 +4636,62 @@ class EntpFletApp:
         self.db.set_task_completed(task_id, completed)
         self._sync_markdown()
         self.refresh_current_sections()
+
+    def request_delete_task(self, task_id: int) -> None:
+        task = self.db.get_task(task_id)
+        if task is None:
+            return
+        children = self.db.list_subtasks(task_id)
+
+        def cancel(_=None) -> None:
+            self._close_dialog()
+
+        def confirm(_=None) -> None:
+            self._close_dialog()
+            backup = self.db.path.parent / "backups" / (
+                f"删除任务前_{task_id}_{time.time_ns()}.entp.zip"
+            )
+            try:
+                if not self._sync_markdown():
+                    self._notify_error("文档尚未保存，已取消删除")
+                    return
+                export_workspace(self.db, self.markdown.root, backup)
+            except (OSError, BackupError) as error:
+                self._notify_error(f"备份失败，未删除任务：{error}")
+                return
+            deleted_ids = self.db.delete_task(task_id)
+            self.expanded_task_ids.difference_update(deleted_ids)
+            if self.subtask_input_parent_id in deleted_ids:
+                self.subtask_input_parent_id = None
+            if self._subtask_shortcut_parent_id in deleted_ids:
+                self._subtask_shortcut_parent_id = None
+            cleanup_error = None
+            try:
+                self.markdown.remove_task_documents(deleted_ids)
+            except (OSError, ValueError) as error:
+                cleanup_error = error
+            self._sync_markdown()
+            self._refresh_task_surface()
+            if cleanup_error:
+                self._notify_error(f"任务已删除，但文档清理失败：{cleanup_error}。完整备份：{backup}")
+            else:
+                self._notify_success("任务已删除，删除前已保存完整备份")
+
+        extra = f"及其 {len(children)} 个子任务" if children else ""
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("删除任务？"),
+            content=ft.Text(
+                f"将删除“{task['title']}”{extra}，并移除对应的今日清单、日历记录、正文和图片。"
+                "删除前会自动保存完整备份，可通过“导入备份”恢复。"
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=cancel),
+                ft.FilledButton("删除任务", on_click=confirm, style=ft.ButtonStyle(bgcolor=RED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
+        self.page.update()
 
     def _confirm_completion_with_subtasks(self, task_id: int, on_confirm) -> bool:
         pending = [
