@@ -47,7 +47,7 @@ def text(value, *, small=False):
 
 def fit_actions(controls):
     result = []
-    for control in controls:
+    for control in stretch_dropdowns(controls):
         pending = [control]
         while pending:
             node = pending.pop()
@@ -108,17 +108,37 @@ def field(label, value="", *, multiline=False):
 
 
 def select(label, options, value=None):
-    def match_menu_width(event):
-        # The stretched field has a finite width only after Flutter lays it out.
-        # Keep the popup aligned with that width, including after window resize.
-        if event.width > 0 and event.control.menu_width != event.width:
-            event.control.menu_width = event.width
-            event.control.update()
-
     return ft.Dropdown(label=label, value=value, options=[ft.DropdownOption(key=str(k),text=v) for k,v in options],
-                       border_radius=12, width=float("inf"), expanded_insets=ft.Padding.all(0),
-                       border_color=LINE, focused_border_color=BLUE,
-                       on_size_change=match_menu_width)
+                       border_radius=12, border_color=LINE, focused_border_color=BLUE,
+                       # Long lists scroll inside ~8 rows instead of covering the form.
+                       menu_height=320 if len(options) > 8 else None)
+
+
+def sized_dropdown(dropdown):
+    """Give a dropdown, and its popup menu, exactly the width of its slot.
+
+    Flutter treats an explicit infinite width as the menu's minimum width, so
+    a stretched dropdown opened a menu spanning the whole window. A full-width
+    wrapper measures the real slot and hands that finite width to both.
+    """
+    def resize(event):
+        width = float(getattr(event, "width", 0) or 0)
+        if width > 0 and dropdown.width != width:
+            dropdown.width = dropdown.menu_width = width
+            dropdown.update()
+    return ft.Container(dropdown, width=float("inf"), on_size_change=resize)
+
+
+def stretch_dropdowns(controls):
+    """Wrap every dropdown in nested ``controls`` lists with :func:`sized_dropdown`."""
+    result = []
+    for control in controls:
+        if isinstance(control, ft.Dropdown):
+            control = sized_dropdown(control)
+        elif isinstance(getattr(control, "controls", None), list):
+            control.controls = stretch_dropdowns(control.controls)
+        result.append(control)
+    return result
 
 
 def expansion(*, title, controls, **kwargs):
@@ -129,6 +149,8 @@ def expansion(*, title, controls, **kwargs):
                             controls_padding=ft.Padding.only(left=8, right=8, bottom=8),
                             collapsed_bgcolor=SURFACE_SOFT, bgcolor=SURFACE_SOFT, **kwargs)
 
+
+RHYTHM_CARD_WIDTH = 204
 
 WAIT_STYLES = {
     "check": (ft.Icons.NOTIFICATION_IMPORTANT_OUTLINED, AMBER, AMBER_SOFT),
@@ -181,8 +203,12 @@ class StructureUI:
                 ft.Icon(ft.Icons.UNFOLD_MORE_ROUNDED, size=18, color=FAINT),
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(horizontal=10, vertical=8), radius=14)
+        # The sidebar card is 204px wide (228px rail minus 12px padding each
+        # side); the popup matches it instead of shrinking to its labels.
+        width = None if compact else RHYTHM_CARD_WIDTH
         return ft.PopupMenuButton(content=face, items=items, tooltip="推进 / 等待、恢复状态、担忧收纳、安静一下",
-                                  menu_position=ft.PopupMenuPosition.OVER, shape=rounded(14), bgcolor=SURFACE)
+                                  menu_position=ft.PopupMenuPosition.OVER, shape=rounded(14), bgcolor=SURFACE,
+                                  size_constraints=ft.BoxConstraints(min_width=width, max_width=width) if width else None)
 
     def _date_field(self, label, value=""):
         """Text date field with a calendar button; typing YYYY-MM-DD still works."""
