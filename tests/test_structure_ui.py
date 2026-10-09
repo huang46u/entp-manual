@@ -320,6 +320,35 @@ class StructureUiTests(unittest.TestCase):
         expanded = a._today_structure(today)
         self.assertTrue(any(isinstance(c,ft.TextButton) and c.content=="添加外部锚点" for c in _walk(expanded)))
 
+    def test_parent_rows_offer_add_subtask_and_hover_targets_shortcut(self):
+        a = self.app
+        other = self.db.create_task(a.current_mid,"另一个父任务")
+        a.expanded_task_ids = set()
+        a.subtask_input_parent_id = None
+        a._subtask_shortcut_parent_id = None
+        a._quick_task_input_focused = True
+        a._quick_today_input_focused = False
+        a._active_editor_dialog = None
+        a._quiet_mode = None
+        a.refresh_current_sections = lambda **_: None
+        row = a._task_row(self.db.get_task(other),completed=False,subtasks=[])
+        buttons = [c for c in _walk(row) if isinstance(c,ft.IconButton) and c.icon==ft.Icons.ADD_ROUNDED]
+        self.assertEqual(len(buttons),1)
+        hovered = next(c for c in _walk(row) if isinstance(c,ft.Container) and c.on_hover)
+        with patch.object(ft.IconButton,"update",lambda self:None):
+            hovered.on_hover(SimpleNamespace(data=True))
+        self.assertEqual(buttons[0].opacity,1)
+        # Shift+Enter now creates the subtask under the hovered row, not the focus task.
+        a.quick_task_input.value = "悬停后的子任务"
+        a._handle_task_keyboard_shortcut(SimpleNamespace(key="Enter",shift=True))
+        children = [r["title"] for r in self.db.list_subtasks(other)]
+        self.assertEqual(children,["悬停后的子任务"])
+        self.assertEqual(self.db.list_subtasks(self.task),[])
+        buttons[0].on_click(None)
+        self.assertEqual(a.subtask_input_parent_id,other)
+        done = a._task_row(self.db.get_task(other),completed=True,subtasks=[])
+        self.assertFalse(any(isinstance(c,ft.IconButton) and c.icon==ft.Icons.ADD_ROUNDED for c in _walk(done)))
+
     def test_side_nav_keeps_selected_index_contract(self):
         from flet_app import SideNav
         chosen = []

@@ -1880,6 +1880,32 @@ class EntpFletApp(StructureUI):
             height=48,
         )
 
+    def _subtask_affordance(self, task_id: int):
+        """Return a hover-revealed add-subtask button and the row hover handler.
+
+        Hovering also records the row as the Shift+Enter target, so the
+        keyboard shortcut acts on the task under the pointer.
+        """
+        button = ft.IconButton(
+            ft.Icons.ADD_ROUNDED,
+            tooltip="添加子任务（也可悬停后按 Shift+Enter）",
+            icon_color=BLUE,
+            icon_size=19,
+            opacity=0,
+            animate_opacity=120,
+            on_click=lambda _, tid=task_id: self.begin_add_subtask(tid),
+        )
+
+        def hover(event, tid=task_id) -> None:
+            self._remember_subtask_parent(event, tid)
+            button.opacity = 1 if str(getattr(event, "data", "")).lower() == "true" else 0
+            try:
+                button.update()
+            except Exception:
+                pass  # Row was rebuilt between enter and exit.
+
+        return button, hover
+
     def _task_row(self, task, *, completed: bool, subtasks) -> ft.Control:
         task_id = int(task["id"])
         selected = task_id == self.selected_task_id
@@ -1887,6 +1913,7 @@ class EntpFletApp(StructureUI):
         can_expand = bool(subtasks) or self.subtask_input_parent_id == task_id
         focused = bool(task["is_focus"]) and not completed
         done_subtasks = sum(str(item["status"]) == "完成" for item in subtasks)
+        add_subtask, hover = self._subtask_affordance(task_id) if not completed else (None, None)
         tile = ft.Container(
             content=ft.Row(
                 [
@@ -1927,6 +1954,7 @@ class EntpFletApp(StructureUI):
                       if focused else []),
                     *([tag(f"{done_subtasks}/{len(subtasks)}", color=BLUE, bgcolor=BLUE_SOFT)]
                       if subtasks else []),
+                    *([add_subtask] if add_subtask else []),
                     ft.IconButton(
                         ft.Icons.DELETE_OUTLINE_ROUNDED,
                         tooltip="删除任务",
@@ -1943,6 +1971,7 @@ class EntpFletApp(StructureUI):
             bgcolor="#F7F8FA" if selected else None,
             border_radius=10,
             on_click=lambda _, tid=task_id: self.select_task(tid),
+            on_hover=hover,
         )
         draggable = self._task_draggable(task_id, title, tile)
         return ft.Container(
@@ -4291,6 +4320,11 @@ class EntpFletApp(StructureUI):
             ),
         )
         can_expand = bool(subtasks) or self.subtask_input_parent_id == task_id
+        add_subtask, hover = None, None
+        if editable and not completed and task_id is not None:
+            parent_row_task = self.db.get_task(task_id)
+            if parent_row_task is not None and parent_row_task["parent_task_id"] is None:
+                add_subtask, hover = self._subtask_affordance(task_id)
         row = ft.Container(
             content=ft.Row(
                 [
@@ -4321,6 +4355,7 @@ class EntpFletApp(StructureUI):
                         overflow=ft.TextOverflow.ELLIPSIS,
                     ),
                     ft.Row(meta, spacing=5, tight=True),
+                    *([add_subtask] if add_subtask else []),
                     *([
                         ft.IconButton(
                             ft.Icons.DELETE_OUTLINE_ROUNDED,
@@ -4342,6 +4377,7 @@ class EntpFletApp(StructureUI):
                 if task_id is not None and editable
                 else None
             ),
+            on_hover=hover,
         )
         parent_row: ft.Control = row
         if task_id is not None and editable:
