@@ -65,8 +65,16 @@ def field(label, value="", *, multiline=False):
 
 
 def select(label, options, value=None):
+    def match_menu_width(event):
+        # The stretched field has a finite width only after Flutter lays it out.
+        # Keep the popup aligned with that width, including after window resize.
+        if event.width > 0 and event.control.menu_width != event.width:
+            event.control.menu_width = event.width
+            event.control.update()
+
     return ft.Dropdown(label=label, value=value, options=[ft.DropdownOption(key=str(k),text=v) for k,v in options],
-                       border_radius=12, width=float("inf"))
+                       border_radius=12, width=float("inf"), expanded_insets=ft.Padding.all(0),
+                       on_size_change=match_menu_width)
 
 
 class StructureUI:
