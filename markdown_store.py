@@ -20,6 +20,12 @@ KIND_INFO = {
     "task": ("任务", "T"),
     "thought": ("思路", "I"),
     "execution": ("执行记录", "L"),
+    "experiment": ("实验", "E"),
+    "anchor": ("外部锚点", "A"),
+    "waiting": ("等待事项", "W"),
+    "recovery": ("恢复", "R"),
+    "worry": ("担忧", "Q"),
+    "activity": ("自主活动", "C"),
 }
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -102,6 +108,19 @@ class MarkdownStore:
             document.unlink(missing_ok=True)
             if assets.exists():
                 shutil.rmtree(assets)
+
+    def mark_task_documents_deleted(self, task_ids: Iterable[int]) -> None:
+        """Label retained system facts as a historical snapshot; leave prose intact."""
+        note = "_任务已删除；以下字段为删除前快照，不代表当前任务状态。_"
+        for task_id in task_ids:
+            path = self.path_for("task", task_id)
+            if not path.exists():
+                continue
+            existing = path.read_text(encoding="utf-8")
+            if SYSTEM_START in existing and SYSTEM_END in existing and note not in existing:
+                start = existing.index(SYSTEM_START) + len(SYSTEM_START)
+                end = existing.index(SYSTEM_END, start)
+                self._merge_synced_path(path, note + "\n\n" + existing[start:end].strip(), "")
 
     def read(self, kind: str, object_id: int) -> str:
         path = self.path_for(kind, object_id)
@@ -324,6 +343,10 @@ class MarkdownStore:
                 "task",
                 lambda current=row: self._sync_task(db, current),
             )
+        live_tasks = {int(row["id"]) for row in tasks}
+        for retained in (self.root / "任务").glob("T*.md"):
+            if retained.stem[1:].isdigit() and int(retained.stem[1:]) not in live_tasks:
+                sync_one(retained, "task", lambda tid=int(retained.stem[1:]): self.mark_task_documents_deleted([tid]))
         for row in thoughts:
             sync_one(
                 self.path_for("thought", int(row["id"])),
@@ -337,7 +360,29 @@ class MarkdownStore:
                 lambda current=row: self._sync_execution(current),
             )
 
-        daily_dates = db.daily_dates()
+        for kind, table in (("experiment", "experiments"), ("anchor", "external_anchors"),
+                            ("waiting", "waiting_items"), ("recovery", "recovery_sessions"),
+                            ("worry", "worries"), ("activity", "autonomous_activities")):
+            rows = db.rows(f"SELECT * FROM {table} ORDER BY id")
+            if kind in ("worry", "recovery"):
+                live = {self.path_for(kind, r["id"]) for r in rows}
+                directory, prefix = KIND_INFO[kind]
+                for stale in (self.root / directory).glob(f"{prefix}*.md"):
+                    if stale.stem[1:].isdigit() and stale not in live:
+                        try:
+                            marker = f"<!-- ENTP-ENTITY:{kind}:{int(stale.stem[1:])} -->"
+                            if marker in stale.read_text(encoding="utf-8"):
+                                stale.unlink()
+                        except OSError as error:
+                            if not continue_on_error:
+                                raise
+                            self.last_sync_errors.append((stale,error))
+            for row in rows:
+                sync_one(self.path_for(kind, row["id"]), kind,
+                         lambda current=row, current_kind=kind: self._sync_structure(db, current_kind, current))
+
+        existing_days = {p.stem for p in (self.root / "每日").glob("*.md") if db._valid_day(p.stem)}
+        daily_dates = sorted(set(db.daily_dates()) | set(db.structure_dates()) | existing_days, reverse=True)
         for day in daily_dates:
             sync_one(
                 self.daily_path(day),
@@ -461,6 +506,40 @@ _以上为程序同步区，请在下方自由记录。_"""
 - 下次改进：
 """
         return self._write_synced("task", row["id"], system, user)
+
+    def _sync_structure(self, db, kind, row) -> Path:
+        labels = {"title":"名称", "source":"真实来源", "kind":"类型", "anchor_date":"日期",
+            "start_at":"开始 / 截止", "end_at":"结束", "consequence":"实际后果", "status":"状态",
+            "question":"技术问题", "summary":"总结", "facts":"已确认事实", "waiting_for":"等待谁",
+            "has_action":"是否有有效行动", "action":"有效行动", "check_date":"检查日期", "archived":"已归档",
+            "started_at":"恢复开始", "ended_at":"恢复结束", "activity":"恢复活动", "content":"原文",
+            "actionability":"是否有行动", "activity_date":"日期", "scheduled_time":"自主安排时间"}
+        values = {"active":"有效 / 进行中", "ended":"已结束", "cancelled":"已取消", "paused":"暂停",
+                  "actionable":"可行动", "waiting":"等待中", "check":"需要检查", "resolved":"已解决",
+                  "event":"事件发生", "deadline":"真实截止", "yes":"有", "no":"没有", "uncertain":"暂时不确定"}
+        lines = [f"<!-- ENTP-ENTITY:{kind}:{row['id']} -->",
+                 f"# {row['title'] if 'title' in row.keys() else row['question'] if kind=='experiment' else KIND_INFO[kind][0]}"]
+        if "task_id" in row.keys():
+            task = db.get_task(row["task_id"]) if row["task_id"] else None
+            lines.append(f"关联任务：{task['title'] if task else '无有效任务引用（历史记录仍保留）'}")
+        for key,label in labels.items():
+            if key in row.keys():
+                value = row[key]
+                lines.append(f"**{label}：** {values.get(value, value) if value is not None else '未记录'}")
+        if kind=="experiment":
+            for iteration in db.experiment_iterations(row["id"]):
+                lines.extend([f"\n## 第 {iteration['round_no']} 轮 · {'已记录' if iteration['state']=='recorded' else '草稿'}",
+                    f"假设：{iteration['hypothesis']}", f"方法：{iteration['method']}",
+                    f"观察：{iteration['observation']}", f"下一假设：{iteration['next_hypothesis']}",
+                    f"参数：{iteration['parameters']}", f"输入：{iteration['input_data']}",
+                    f"记录日期：{iteration['event_date'] or '尚未记录观察'}"])
+                for evidence in db.rows("SELECT * FROM experiment_evidence WHERE iteration_id=? ORDER BY id", (iteration["id"],)):
+                    value = evidence["value"]
+                    if evidence["kind"]=="attachment":
+                        value = f"[导入附件](../{value})"
+                    lines.append(f"- 证据：{value}")
+        lines.append("\n_以上为程序同步区。下方正文由用户保管。_")
+        return self._write_synced(kind, row["id"], "\n\n".join(lines), "")
 
     def _sync_thought(self, db: "Database", row) -> Path:
         object_code = f"I{row['id']:04d}"
@@ -600,6 +679,10 @@ _以上为程序同步区，请在下方自由记录。_"""
 
 {chr(10).join(lines) or '- 当天没有行动记录'}
 
+## 结构与状态
+
+{self._daily_structure_text(db, day)}
+
 _以上为程序同步区。任务后续改名或转移主线，不会改写这里的当天快照。_"""
         user = """## 当日意图
 
@@ -614,6 +697,29 @@ _以上为程序同步区。任务后续改名或转移主线，不会改写这�
 - 明天是否仍愿意选择这条主线？
 """
         return self._merge_synced_path(self.daily_path(day), system, user)
+
+    def _daily_structure_text(self, db, day) -> str:
+        from life_structure import ASSESS_LABELS, WAIT_LABELS
+        facts = db.structure_day(day)
+        lines = []
+        for row in facts["anchors"]:
+            lines.append(f"- 外部锚点：{row['title']} · {row['source']} · {'截止' if row['kind']=='deadline' else '事件'} · {row['status']}")
+        for row in facts["activities"]:
+            lines.append(f"- 自主活动：{row['title']} · {row['scheduled_time']}")
+        for row in facts["iterations"]:
+            path = self.relative_path_for("experiment",row["experiment_id"])
+            lines.append(f"- [实验第 {row['round_no']} 轮](../{path})：{row['observation']}")
+        for row in facts["waiting_events"]:
+            after = json.loads(row["after_json"])
+            lines.append(f"- 等待变化：{after['title']} · {WAIT_LABELS[after['status']]} · {after['facts']}")
+        for row in facts["recoveries"]:
+            lines.append(f"- 恢复：{row['activity'] or '未选择活动'} · {row['started_at']} → {row['ended_at'] or '尚未结束'}")
+        assessment = facts["assessment"]
+        if assessment:
+            for key,label in ASSESS_LABELS.items():
+                value = assessment[key]
+                lines.append(f"- {label}：{'未记录' if value is None else value if key=='pressure' else '是' if value else '否'}")
+        return "\n".join(lines) or "- 没有结构或自评记录；缺失数据保持为空。"
 
     def _write_indexes(self, mainlines, tasks, thoughts, logs, daily_dates) -> None:
         groups = (
@@ -635,6 +741,12 @@ _以上为程序同步区。任务后续改名或转移主线，不会改写这�
             for row in rows:
                 filename = self.path_for(kind, row["id"]).name
                 index_lines.append(f"- [{labeler(row)}](./{filename})")
+            if kind == "task":
+                live = {self.path_for(kind, row["id"]) for row in rows}
+                retained = [p for p in (self.root / directory).glob("T*.md") if p not in live and p.stem[1:].isdigit()]
+                if retained:
+                    index_lines.extend(["", "## 已删除任务的历史笔记", ""])
+                    index_lines.extend(f"- [{p.stem} · 历史笔记](./{p.name})" for p in sorted(retained))
             self._atomic_write_text(
                 self.root / directory / "INDEX.md", "\n".join(index_lines) + "\n"
             )
@@ -647,4 +759,11 @@ _以上为程序同步区。任务后续改名或转移主线，不会改写这�
             self.root / "每日" / "INDEX.md", "\n".join(daily_index) + "\n"
         )
         root_lines.append(f"- [每日账本](./每日/INDEX.md) · {len(daily_dates)} 个文档")
+        for kind in ("experiment", "anchor", "waiting", "recovery", "worry", "activity"):
+            directory, _ = KIND_INFO[kind]
+            files = sorted((self.root / directory).glob("*.md"))
+            files = [p for p in files if p.name != "INDEX.md"]
+            self._atomic_write_text(self.root / directory / "INDEX.md", f"# {directory}\n\n" +
+                "\n".join(f"- [{p.stem}](./{p.name})" for p in files) + "\n")
+            root_lines.append(f"- [{directory}](./{directory}/INDEX.md) · {len(files)} 个文档")
         self._atomic_write_text(self.root / "README.md", "\n".join(root_lines) + "\n")

@@ -9,7 +9,34 @@ if TYPE_CHECKING:
     from database import Database
 
 
-INTERNAL_DEMO_VERSION = 1
+INTERNAL_DEMO_VERSION = 2
+
+
+def populate_structure_demo(db: Database) -> None:
+    """Called only by fresh demo/tour creation, never by migration."""
+    if db.get_setting("structure_demo_version"):
+        return
+    task = db.row("""SELECT t.id FROM tasks t JOIN daily_entries d ON d.task_id=t.id
+        WHERE d.entry_date=? AND d.state='planned' ORDER BY t.is_focus DESC,t.id LIMIT 1""", (db.today_iso(),))
+    if task is None:
+        return
+    task_id = int(task["id"])
+    db.save_anchor(title="演示：外部交流安排",source="示例会议组织方（导览数据）",kind="event",anchor_date=db.today_iso(),task_id=task_id)
+    eid = db.create_experiment(task_id,"演示：输出变化是否符合预期？")
+    iid = db.start_iteration(eid)
+    db.save_iteration_draft(iid,hypothesis="调整参数能改变输出",method="演示运行：比较前后输出",
+        observation="示例观察：输出已经变化，需要进一步检查局部结果",next_hypothesis="检查局部误差来源")
+    db.record_iteration(iid)
+    db.add_experiment_evidence(iid,"示例数字：误差由 0.12 变为 0.08；请替换为自己的实际结果")
+    db.start_iteration(eid)
+    db.save_waiting_item(title="演示：等待外部技术信息",waiting_for="示例合作方",
+        facts="资料已经发出，目前没有新的可处理信息",check_date=(date.today()+timedelta(days=3)).isoformat())
+    db.save_activity("演示：自主选择轻松阅读",db.today_iso())
+    sid = db.start_recovery("演示：安静休息")
+    db.end_recovery(sid)
+    db.save_worry("演示：一个暂时不确定是否能行动的现实问题")
+    db.save_daily_assessment(db.today_iso(),external_anchor=1,pressure="适中")
+    db.set_setting("structure_demo_version","1")
 
 
 def populate_internal_demo(db: Database) -> None:
@@ -359,6 +386,7 @@ def populate_internal_demo(db: Database) -> None:
             ),
         )
 
+    populate_structure_demo(db)
     issues = validate_internal_demo(db)
     if issues:
         raise RuntimeError("演示数据校验失败：" + "；".join(issues))

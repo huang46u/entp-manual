@@ -52,7 +52,7 @@ class TaskDeletionTests(unittest.TestCase):
         self.assertEqual(self.db.list_thoughts(), [])
         self.assertFalse(self.db.get_setting("internal_demo_version"))
 
-    def test_delete_parent_removes_children_records_and_links_without_affecting_other_tasks(self):
+    def test_delete_parent_detaches_history_and_links_without_affecting_other_tasks(self):
         parent = self.db.create_task(self.mid, "删除父任务", is_today=True)
         child = self.db.create_task(self.mid, "删除子任务", parent_task_id=parent)
         other = self.db.create_task(self.mid, "保留任务", is_today=True)
@@ -65,10 +65,10 @@ class TaskDeletionTests(unittest.TestCase):
         self.assertIsNotNone(self.db.get_task(other))
         self.assertIsNotNone(self.db.get_thought(thought))
         self.assertEqual(int(self.db.get_focus_task(self.mid)["id"]), other)
-        self.assertEqual(self.db.rows("SELECT * FROM task_execution_logs"), [])
+        self.assertEqual(len(self.db.rows("SELECT * FROM task_execution_logs WHERE task_id IS NULL")), 1)
         self.assertEqual(self.db.rows("SELECT * FROM thought_task_links"), [])
-        self.assertEqual(self.db.rows("SELECT * FROM task_events WHERE task_id IS NULL"), [])
-        self.assertEqual([row["task_id"] for row in self.db.list_daily_entries(self.db.today_iso())], [other])
+        self.assertTrue(self.db.rows("SELECT * FROM task_events WHERE task_id IS NULL"))
+        self.assertEqual({row["task_id"] for row in self.db.list_daily_entries(self.db.today_iso())}, {None, other})
         self.assertEqual(self.db.rows("PRAGMA foreign_key_check"), [])
 
     def test_delete_child_preserves_parent_and_sibling(self):
@@ -120,8 +120,10 @@ class TaskDeletionTests(unittest.TestCase):
         self.dialogs[-1].actions[1].on_click(None)
         self.assertIsNone(self.db.get_task(parent))
         self.assertIsNone(self.db.get_task(child))
-        self.assertFalse(self.markdown.path_for("task", parent).exists())
-        self.assertFalse(image.exists())
+        self.assertTrue(self.markdown.path_for("task", parent).exists())
+        self.assertIn("任务已删除", self.markdown.path_for("task", parent).read_text(encoding="utf-8"))
+        self.assertIn(f"T{parent:04d}", (self.markdown.root / "任务" / "INDEX.md").read_text(encoding="utf-8"))
+        self.assertTrue(image.exists())
         self.assertTrue(self.markdown.path_for("task", other).exists())
         archive = next((self.root / "backups").glob("*.entp.zip"))
         self.assertEqual(inspect_backup(archive).tasks, 3)

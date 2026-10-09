@@ -40,6 +40,7 @@ from backup_service import (
 from app_version import APP_VERSION, INTERNAL_DEMO_BUILD
 from database import Database
 from markdown_store import MarkdownStore
+from structure_ui import StructureUI
 from update_service import (
     ReleaseInfo,
     UpdateError,
@@ -261,7 +262,7 @@ def mainline_goal_guide_button() -> ft.IconButton:
     )
 
 
-class EntpFletApp:
+class EntpFletApp(StructureUI):
     TASK_DRAG_GROUP = "task-hierarchy"
     """Flet UI shell; the existing Database remains the single source of truth."""
 
@@ -488,8 +489,11 @@ class EntpFletApp:
             "ideas": self.NAV_IDEAS,
             "today": self.NAV_TODAY,
             "calendar": self.NAV_CALENDAR,
+            "waiting": self.NAV_WAITING,
         }
+        self._structure_init()
         self.show_view(initial_views.get(initial_view, self.NAV_CURRENT))
+        self._restore_quiet_startup()
         self._start_tray()
         if self.start_hidden and self.tray_available:
             self.page.run_task(self._hide_window)
@@ -556,6 +560,12 @@ class EntpFletApp:
             pass
 
     def _notify_error(self, message: str) -> None:
+        if getattr(self, "_quiet_mode", None):
+            self._write_runtime_error("安静界面中的操作反馈", message)
+            if hasattr(self, "_quiet_feedback"):
+                self._quiet_feedback.value = message
+                self.page.update()
+            return
         if getattr(self, "_closed", False) or getattr(self, "_exiting", False):
             self._write_runtime_error("窗口已关闭，跳过错误提示", message)
             return
@@ -571,6 +581,8 @@ class EntpFletApp:
             self._write_runtime_error("无法显示错误提示", traceback.format_exc())
 
     def _notify_success(self, message: str) -> None:
+        if getattr(self, "_quiet_mode", None):
+            return
         try:
             self.page.show_dialog(
                 ft.SnackBar(
@@ -926,6 +938,8 @@ class EntpFletApp:
         self.idea_archive_open = False
         self.inspiration_capture_open = False
 
+        self._structure_init()
+
     def _handle_page_closed(self, _=None) -> None:
         self._stop_tray()
         self._close_database()
@@ -1047,7 +1061,7 @@ class EntpFletApp:
                 ],
                 spacing=12,
             ),
-            padding=ft.Padding.only(left=18, right=12, top=24, bottom=28),
+            padding=ft.Padding.only(left=18, right=12, top=16, bottom=12),
         )
         self.update_button = ft.TextButton(
             f"检查更新 · {APP_VERSION}",
@@ -1078,31 +1092,36 @@ class EntpFletApp:
                     icon=ft.Icons.FLAG_OUTLINED,
                     selected_icon=ft.Icons.FLAG_ROUNDED,
                     label="当前主线",
-                    padding=12,
+                    padding=8,
                 ),
                 ft.NavigationRailDestination(
                     icon=ft.Icons.INVENTORY_2_OUTLINED,
                     selected_icon=ft.Icons.INVENTORY_2_ROUNDED,
                     label="我的主线任务保管箱",
-                    padding=12,
+                    padding=8,
                 ),
                 ft.NavigationRailDestination(
                     icon=ft.Icons.LIGHTBULB_OUTLINE_ROUNDED,
                     selected_icon=ft.Icons.LIGHTBULB_ROUNDED,
                     label="候审区",
-                    padding=12,
+                    padding=8,
                 ),
                 ft.NavigationRailDestination(
                     icon=ft.Icons.CHECKLIST_ROUNDED,
                     selected_icon=ft.Icons.FACT_CHECK_ROUNDED,
                     label="今日清单",
-                    padding=12,
+                    padding=8,
                 ),
                 ft.NavigationRailDestination(
                     icon=ft.Icons.CALENDAR_MONTH_OUTLINED,
                     selected_icon=ft.Icons.CALENDAR_MONTH_ROUNDED,
                     label="完成日历",
-                    padding=12,
+                    padding=8,
+                ),
+                ft.NavigationRailDestination(
+                    icon=ft.Icons.HOURGLASS_EMPTY_ROUNDED,
+                    label="等待事项",
+                    padding=8,
                 ),
             ],
             trailing=ft.Container(
@@ -1125,21 +1144,21 @@ class EntpFletApp:
                         ft.Row(
                             [
                                 ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=19, color=MUTED),
-                                ft.Text("每个小块都有 Markdown", size=12, color=MUTED),
+                                ft.Text("每个小块都有笔记", size=12, color=MUTED),
                             ],
                             spacing=9,
                         ),
                         ft.Row(
                             [
                                 ft.Container(width=8, height=8, bgcolor=GREEN, border_radius=99),
-                                ft.Text("本地 SQLite 已连接", size=12, color=MUTED),
+                                ft.Text("本地数据已连接", size=12, color=MUTED),
                             ],
                             spacing=9,
                         ),
                     ],
-                    spacing=14,
+                    spacing=8,
                 ),
-                padding=ft.Padding.only(left=22, right=16, bottom=24),
+                padding=ft.Padding.only(left=22, right=16, bottom=12),
             ),
             pin_trailing_to_bottom=True,
             on_change=lambda e: self.show_view(int(e.control.selected_index)),
@@ -1334,6 +1353,12 @@ class EntpFletApp:
             self._update_downloading = False
 
     def show_view(self, index: int) -> None:
+        if getattr(self, "_quiet_mode", None):
+            return
+        self._structure_route = None
+        self._structure_fields = {}
+        self._structure_flush = None
+        self.db.refresh_waiting_checks()
         self.active_index = index
         self.rail.selected_index = index
         if index == self.NAV_CURRENT:
@@ -1354,6 +1379,8 @@ class EntpFletApp:
         elif index == self.NAV_CALENDAR:
             self._refresh_local_day()
             view = self._completion_calendar_view()
+        elif index == self.NAV_WAITING:
+            view = self._waiting_view()
         else:
             view = self._phase_placeholder("暂未开放", "这个页面还没有迁移。", ft.Icons.CONSTRUCTION_ROUNDED)
         self.content_switcher.content = view
@@ -1492,9 +1519,9 @@ class EntpFletApp:
                                 ft.Icon(ft.Icons.NEAR_ME_ROUNDED, size=20, color=BLUE),
                                 ft.Column(
                                     [
-                                        ft.Text("先开始三分钟", size=12, color=MUTED),
+                                        ft.Text("看看现实反馈", size=12, color=MUTED),
                                         ft.Text(
-                                            "我们先干三分钟，能坚持三分钟就是胜利",
+                                            "选择可以验证的工作，记录实际发生的变化",
                                             size=16,
                                             weight=ft.FontWeight.W_600,
                                             color=INK,
@@ -1552,6 +1579,21 @@ class EntpFletApp:
                 ],
                 spacing=14,
             )
+        if focus and self.db.task_is_waiting(int(focus["id"])) and int(focus["id"]) not in getattr(self, "_waiting_expanded", set()):
+            task_id = int(focus["id"])
+            body = ft.Column([
+                ft.Text(str(focus["title"]), size=21, weight=ft.FontWeight.W_700, color=INK),
+                ft.Text("依赖外部输入 · 当前没有新的可处理信息。焦点和任务状态仍然保留。", color=MUTED),
+                ft.Row([
+                    ft.TextButton("查看等待事项", on_click=lambda _: self.show_view(self.NAV_WAITING)),
+                    ft.TextButton("展开其他可执行操作", on_click=lambda _: self._expand_waiting_focus(task_id)),
+                ], wrap=True),
+            ], spacing=12)
+        body.controls.append(ft.Row([
+            *([ft.TextButton("进入实验模式", on_click=lambda _: self.open_experiment(task_id=int(focus["id"]))),
+               ft.TextButton("实验历史", on_click=lambda _: self.open_task_experiments(int(focus["id"])))] if focus else []),
+        ], wrap=True))
+        body.controls.append(self._structure_actions())
         return ft.Card(
             content=ft.Container(body, padding=20),
             elevation=0,
@@ -3904,10 +3946,14 @@ class EntpFletApp:
         if is_today:
             overdue = list(self.db.list_overdue_entries(selected_iso))
             active = [row for row in entries if str(row["state"]) == "planned"]
+            waiting_entries = [row for row in active if row["task_id"] and self.db.task_is_waiting(int(row["task_id"]))]
+            active = [row for row in active if row not in waiting_entries]
+            overdue = [row for row in overdue if not (row["task_id"] and self.db.task_is_waiting(int(row["task_id"])))]
             completed = [row for row in entries if str(row["state"]) == "completed"]
             unresolved: list = []
         else:
             overdue = []
+            waiting_entries = []
             active = []
             completed = [row for row in entries if bool(row["had_completion"])]
             unresolved = [row for row in entries if not bool(row["had_completion"])]
@@ -3965,6 +4011,8 @@ class EntpFletApp:
             )
         if active:
             groups.append(self._daily_group("今天", active, editable=True))
+        if waiting_entries:
+            groups.append(self._daily_group("依赖外部输入", waiting_entries, editable=False))
         if unresolved:
             groups.append(self._daily_group("当日未完成", unresolved, editable=False))
         if completed:
@@ -4010,7 +4058,7 @@ class EntpFletApp:
 
         body = ft.Container(
             content=ft.Column(
-                [self._today_header(), input_or_history, *groups],
+                [self._today_header(), self._today_structure(selected_iso), input_or_history, *groups],
                 spacing=14,
                 scroll=ft.ScrollMode.AUTO,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -4353,7 +4401,7 @@ class EntpFletApp:
         )
         body = ft.Container(
             ft.Column(
-                [header, ft.ResponsiveRow([left, right], spacing=18, run_spacing=18)],
+                [header, ft.ResponsiveRow([left, right], spacing=18, run_spacing=18), self._structure_review_panel()],
                 spacing=18,
                 scroll=ft.ScrollMode.AUTO,
             ),
@@ -4665,24 +4713,16 @@ class EntpFletApp:
                 self.subtask_input_parent_id = None
             if self._subtask_shortcut_parent_id in deleted_ids:
                 self._subtask_shortcut_parent_id = None
-            cleanup_error = None
-            try:
-                self.markdown.remove_task_documents(deleted_ids)
-            except (OSError, ValueError) as error:
-                cleanup_error = error
             self._sync_markdown()
             self._refresh_task_surface()
-            if cleanup_error:
-                self._notify_error(f"任务已删除，但文档清理失败：{cleanup_error}。完整备份：{backup}")
-            else:
-                self._notify_success("任务已删除，删除前已保存完整备份")
+            self._notify_success("任务已删除，历史、正文和附件仍保留；删除前已保存完整备份")
 
         extra = f"及其 {len(children)} 个子任务" if children else ""
         self.page.show_dialog(ft.AlertDialog(
             modal=True,
             title=ft.Text("删除任务？"),
             content=ft.Text(
-                f"将删除“{task['title']}”{extra}，并移除对应的今日清单、日历记录、正文和图片。"
+                f"将删除“{task['title']}”{extra}。过去的账本、完成事实、实验、正文和图片仍保留。"
                 "删除前会自动保存完整备份，可通过“导入备份”恢复。"
             ),
             actions=[
@@ -4789,6 +4829,8 @@ class EntpFletApp:
 
     def _handle_task_keyboard_shortcut(self, event: ft.KeyboardEvent) -> None:
         """用 Shift+Enter 添加子任务，同时避开任务详情和 Markdown 编辑器。"""
+        if getattr(self, "_quiet_mode", None):
+            return
         key = str(event.key).lower()
         if (
             key == "escape"
@@ -4941,6 +4983,8 @@ class EntpFletApp:
         import asyncio
 
         await asyncio.sleep(0.05)
+        if getattr(self, "_quiet_mode", None):
+            return
         try:
             await self.quick_task_input.focus()
         except RuntimeError:
@@ -5477,6 +5521,7 @@ class EntpFletApp:
             self._reset_workspace_view_state()
             self._sync_markdown(show_error=False)
             self.show_view(self.NAV_CURRENT)
+            self._restore_quiet_startup()
         except Exception as error:
             self._write_runtime_error("导入完整备份失败", traceback.format_exc())
             if self._closed:
@@ -5574,7 +5619,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--view",
-        choices=("current", "vault", "ideas", "today", "calendar"),
+        choices=("current", "vault", "ideas", "today", "calendar", "waiting"),
         default="current",
     )
     parser.add_argument("--qa-day", type=date.fromisoformat)
@@ -5600,6 +5645,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-boundary-report", type=Path)
     parser.add_argument("--qa-boundary-error", action="store_true")
     parser.add_argument("--qa-e2e-report", type=Path)
+    parser.add_argument("--qa-structure-report", type=Path)
+    parser.add_argument("--qa-structure-resume", action="store_true")
+    parser.add_argument("--qa-window-size", help="Isolated QA window, e.g. 780x620")
     parser.add_argument("--qa-runtime-error", action="store_true")
     parser.add_argument("--qa-window-state-report", type=Path)
     parser.add_argument("--start-hidden", action="store_true")
@@ -5670,6 +5718,7 @@ def main() -> None:
                     args.qa_boundary_report,
                     args.qa_boundary_error,
                     args.qa_e2e_report,
+                    args.qa_structure_report,
                     args.qa_runtime_error,
                     args.qa_window_state_report,
                 )
@@ -5708,6 +5757,21 @@ def main() -> None:
                 page.window.height = 720
                 page.update()
                 await asyncio.sleep(1.0)
+            if args.qa_window_size:
+                width, height = map(int, args.qa_window_size.lower().split("x"))
+                page.window.maximized = False
+                page.update()
+                await asyncio.sleep(0.4)
+                page.window.width, page.window.height = width, height
+                page.update()
+                await asyncio.sleep(0.6)
+            if args.qa_structure_report:
+                from tests.structure_desktop_e2e import run_structure_scenarios
+                result = await run_structure_scenarios(ui, args.qa_structure_report.resolve(), resume=args.qa_structure_resume)
+                await ui._exit_application()
+                if result["failed"]:
+                    raise RuntimeError("生活结构桌面场景验证失败，请查看报告")
+                return
             if args.qa_e2e_report:
                 from tests.desktop_e2e import DesktopE2ERunner
 
@@ -5868,6 +5932,10 @@ def main() -> None:
             raise
 
     ft.run(app_main, assets_dir=str(RESOURCE_ROOT / "assets"))
+    if args.qa_structure_report and args.qa_structure_report.exists():
+        report = json.loads(args.qa_structure_report.read_text(encoding="utf-8"))
+        if report.get("failed"):
+            raise SystemExit(1)
     if args.qa_e2e_report and args.qa_e2e_report.exists():
         report = json.loads(args.qa_e2e_report.read_text(encoding="utf-8"))
         if int(report.get("failed", 0)):

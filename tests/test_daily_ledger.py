@@ -11,7 +11,8 @@ from markdown_store import MarkdownStore
 def main() -> None:
     with TemporaryDirectory() as root:
         base = Path(root)
-        db = Database(base / "daily-ledger.db")
+        # Exercise only this ledger, independent of product-tour completions.
+        db = Database(base / "daily-ledger.db", personal_workspace=True)
         markdown = MarkdownStore(base / "markdown")
         current = db.current_mainline_id()
         today = date.today().isoformat()

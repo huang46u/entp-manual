@@ -35,7 +35,9 @@ call workspace-env.cmd
 
 正式工作区首次启动只创建空的“我的主线”和收集箱，不再生成上游演示任务或灵感。验证始终使用 `.runtime\qa\` 下的独立数据库。
 
-任务列表、今日清单和任务详情提供垃圾桶按钮。删除前会确认；父任务会连同子任务一起删除，并清理相关的每日记录、日历事实、Markdown 和图片。程序会先保存完整 `.entp.zip` 备份到 `data\backups\`，备份失败时不会删除。可从主线保管箱的“导入备份”恢复删除前的整个工作区。
+任务列表、今日清单和任务详情提供垃圾桶按钮。删除前会确认；父任务会连同子任务一起删除，但保留每日历史、日历完成事实、执行记录、实验、Markdown 和图片，解除任务引用。程序会先保存完整 `.entp.zip` 备份到 `data\backups\`，备份失败时不会删除。可从主线保管箱的“导入备份”恢复删除前的整个工作区。
+
+生活结构扩展沿用同一启动链和数据目录：今日清单展示外部锚点与自主活动，当前主线提供连续实验，侧栏增加等待事项，恢复模式覆盖工作界面，完成日历提供 14 天回顾。SQLite 版本升级至 219；旧库启动时幂等升级，已有数据库不注入示例。备份格式 2 包含新旧实体，导入旧格式 1 后再升级。实验导入附件位于 `data\markdown\_assets\experiments\`。
 
 ## 维护
 
@@ -47,11 +49,11 @@ call workspace-env.cmd
 
 导出备份时默认打开 `data\backups\`；如需保持所有文件在 workspace，请保留该位置。避免把 `--db` 或 `--qa-*` 的输出路径手动设到 workspace 外。外部 Markdown 编辑器会遵循它自己的存储配置。
 
-测试命令（cmd）：
+本次新增功能针对性测试（cmd）：
 
 ```bat
 call workspace-env.cmd
-.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+.venv\Scripts\python.exe -m unittest tests.test_life_structure tests.test_structure_ui tests.test_task_deletion tests.test_backup_restore
 ```
 
 ## 部署验证

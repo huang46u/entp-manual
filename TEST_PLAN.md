@@ -222,3 +222,36 @@
 | 人工保留 | Windows 原生保存/选择文件窗口 | Flet/Flutter 不暴露 Windows UI Automation 控件树；自动化从选择结果后的校验、确认、恢复继续覆盖 |
 
 原生 E2E 通过标准：失败数为 0；统一回调边界审计的遗漏数为 0；导入失败或交互异常后数据库事务、导航和选中状态可恢复。
+
+## 8. 生活结构扩展的针对性验证
+
+只运行新增功能及直接受影响检查，不使用全套发现命令。所有命令先在 cmd 中 `call workspace-env.cmd`；数据库、附件、截图、报告和临时目录位于 D 盘工作区。
+
+| 检查 | 入口 |
+| --- | --- |
+| 旧库 218 升级、重复迁移、未来版本保护、既有空库不注入演示 | `tests.test_life_structure`、`tests.test_database_upgrade` |
+| 锚点真实来源、事件/截止、跨日、修改历史、无重复任务 | `tests.test_life_structure` |
+| 连续轮次、草稿重启、不可覆盖观察、追加证据、日志幂等、事务回滚 | `tests.test_life_structure`、`tests.test_structure_ui` |
+| 等待到期、可行动、归档恢复、多项关联与任务状态独立 | 同上 |
+| 恢复同一控件树、输入和焦点、跨进程恢复、跳过记录、快捷键隔离 | `tests.test_structure_ui`、原生桌面两次启动 |
+| 缺失自评、明确的否、清空字段、14 天空白日、担忧不进入灵感 | 新增两个测试模块 |
+| 删除后历史、正文、图片与安全备份保留 | `tests.test_task_deletion` |
+| 新旧备份、完整新实体和导入附件、损坏拒绝、回滚 | `tests.test_life_structure`、`tests.test_backup_restore` |
+| 旧账本、主线切换、候审状态及管理区外正文 | 直接受影响的 `test_feature_matrix` 用例与 `python -m tests.test_daily_ledger` |
+
+原生场景执行器是 `tests/structure_desktop_e2e.py`，从 Flet 窗口内驱动真实控件回调并读取 SQLite 断言，生成截图；第二次启动必须复用同一独立 QA 数据库，用新的进程检验恢复模式和实验草稿。
+
+```bat
+call workspace-env.cmd
+.venv\Scripts\python.exe flet_app.py --db .runtime\qa\structure-check.db --qa-window-size 920x720 --qa-structure-report .runtime\qa\structure-check.json
+.venv\Scripts\python.exe flet_app.py --db .runtime\qa\structure-check.db --qa-window-size 920x720 --qa-structure-resume --qa-structure-report .runtime\qa\structure-check-resume.json
+```
+
+窗口分别检查 `780×620`、`920×720`、`1720×980`；截图需人工查看侧栏是否重叠、表单是否裁切、主要按钮能否通过滚动到达，以及恢复覆盖层是否完全隐藏工作信息。
+
+保留的人工步骤：
+
+1. 在独立 QA 工作区保存一轮实验，点击「追加结果证据 → 导入文件到备份」，从 Windows 原生选择器选 D 盘文件；取消选择也应不改变记录。
+2. 在主线保管箱使用原生保存/选择窗口导出，再导入到另一个 QA 工作区，确认实验附件可读、旧正文保留。
+3. 手动键入各表单，检查中文输入法、展开区及滚动；覆盖层退出后确认滚动位置与未提交输入仍在。
+4. 本次未构建安装包：正式发布前另验安装、更新和卸载；保持便携启动脚本的 D 盘存储配置，不用当前旧安装包冒充扩展版。

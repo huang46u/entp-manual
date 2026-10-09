@@ -14,13 +14,14 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, BinaryIO
 
 from app_version import APP_VERSION
+from life_structure import STRUCTURE_TABLES
 
 if TYPE_CHECKING:
     from database import Database
 
 
 BACKUP_FORMAT = "entp-workspace-backup"
-BACKUP_VERSION = 1
+BACKUP_VERSION = 2
 DATABASE_MEMBER = "database/entp.db"
 MANIFEST_MEMBER = "manifest.json"
 MAX_MEMBER_SIZE = 1024 * 1024 * 1024
@@ -80,30 +81,34 @@ def _sha256_path(path: Path) -> tuple[str, int]:
         return _sha256_stream(handle)
 
 
-def _table_counts(connection: sqlite3.Connection) -> dict[str, int]:
+def _table_counts(connection: sqlite3.Connection, format_version: int = BACKUP_VERSION) -> dict[str, int]:
     tables = {
         str(row[0])
         for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )
     }
-    missing = REQUIRED_TABLES - tables
+    required = REQUIRED_TABLES | (STRUCTURE_TABLES if format_version >= 2 else set())
+    missing = required - tables
     if missing:
         raise BackupError(f"备份数据库缺少必要数据表：{', '.join(sorted(missing))}")
     return {
         table: int(connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
-        for table in sorted(REQUIRED_TABLES)
+        for table in sorted(required)
     }
 
 
-def _validate_database(path: Path) -> dict[str, int]:
+def _validate_database(path: Path, format_version: int = BACKUP_VERSION) -> dict[str, int]:
     try:
         connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
         try:
+            from database import SCHEMA_VERSION
+            if int(connection.execute("PRAGMA user_version").fetchone()[0]) > SCHEMA_VERSION:
+                raise BackupError("备份数据库由更高版本创建，请先升级程序再导入")
             integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
             if integrity.lower() != "ok":
                 raise BackupError(f"备份数据库完整性检查失败：{integrity}")
-            return _table_counts(connection)
+            return _table_counts(connection, format_version)
         finally:
             connection.close()
     except sqlite3.DatabaseError as error:
@@ -197,7 +202,7 @@ def _validate_archive(archive_path: Path, *, stage_database: Path | None = None)
                             actual_hash, size = _sha256_stream(source)
                     if size != entry.get("size") or actual_hash != entry.get("sha256"):
                         raise BackupError(f"备份文件校验失败：{name}")
-                counts = _validate_database(stage_database)
+                counts = _validate_database(stage_database, manifest['format_version'])
             finally:
                 if temporary_context is not None:
                     temporary_context.cleanup()
@@ -336,7 +341,7 @@ def restore_workspace(
         installed_database = True
         os.replace(incoming_markdown, markdown_root)
         installed_markdown = True
-        _validate_database(database_path)
+        _validate_database(database_path, manifest['format_version'])
     except Exception as error:
         try:
             if installed_database and database_path.exists():

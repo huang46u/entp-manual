@@ -6,6 +6,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from life_structure import LifeStructure, create_structure_schema
+
 
 TASK_STATUSES = ("待执行", "今日", "执行中", "完成")
 THOUGHT_STATUSES = (
@@ -22,10 +24,10 @@ THOUGHT_STATUSES = (
 )
 INTEREST_LEVELS = ("一闪而过", "有点好奇", "很想继续", "持续着迷")
 RELATION_TYPES = ("支撑", "拆解", "启发", "冲突", "延伸")
-SCHEMA_VERSION = 218
+SCHEMA_VERSION = 219
 
 
-class Database:
+class Database(LifeStructure):
     def __init__(
         self,
         path: str | Path,
@@ -42,10 +44,20 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA busy_timeout = 2000")
-        self._create_schema()
+        existing_workspace = bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
+        ).fetchone())
+        if int(self.conn.execute("PRAGMA user_version").fetchone()[0]) > SCHEMA_VERSION:
+            self.conn.close()
+            raise ValueError("数据库由更新版本创建，请使用更新版本打开")
+        try:
+            self._create_schema()
+        except Exception:
+            self.conn.close()
+            raise
         if personal_workspace:
             self.initialize_personal_workspace()
-        elif internal_demo and not self.row("SELECT 1 FROM mainlines LIMIT 1"):
+        elif internal_demo and not existing_workspace and not self.row("SELECT 1 FROM mainlines LIMIT 1"):
             # Import locally to keep the database module usable without demo
             # content and to avoid a module-level dependency cycle.
             from demo_data import populate_internal_demo
@@ -53,7 +65,10 @@ class Database:
             populate_internal_demo(self)
         # QA databases can request the real schema without any initial rows.
         elif seed_on_empty:
-            self._seed_if_empty()
+            if not existing_workspace:
+                self._seed_if_empty()
+            elif not self.row("SELECT 1 FROM mainlines LIMIT 1"):
+                self.initialize_personal_workspace()
         self._migrate_legacy_daily_entries()
         self._initialize_focus_state()
         self.refresh_today_flags()
@@ -275,6 +290,7 @@ class Database:
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_one_focus_task_per_mainline
                ON tasks(mainline_id) WHERE is_focus = 1 AND status <> '完成'"""
         )
+        create_structure_schema(self.conn)
         # user_version 只在全部结构迁移成功后写入，便于后续版本准确识别基线。
         self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.commit()
@@ -804,6 +820,9 @@ class Database:
         )
         self.conn.commit()
 
+        from demo_data import populate_structure_demo
+        populate_structure_demo(self)
+
     def rows(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
         return list(self.conn.execute(sql, tuple(params)).fetchall())
 
@@ -1053,7 +1072,7 @@ class Database:
         )
 
     def delete_task(self, task_id: int) -> list[int]:
-        """Delete a task, its children and dated records in one transaction."""
+        """Delete live tasks while preserving dated facts and execution history."""
         task = self.get_task(task_id)
         if task is None:
             return []
@@ -1063,13 +1082,9 @@ class Database:
         )]
         placeholders = ",".join("?" for _ in task_ids)
         with self.conn:
-            self.conn.execute(
-                f"DELETE FROM task_events WHERE task_id IN ({placeholders}) "
-                f"OR daily_entry_id IN (SELECT id FROM daily_entries WHERE task_id IN ({placeholders}))",
-                task_ids + task_ids,
-            )
-            self.conn.execute(f"DELETE FROM daily_entries WHERE task_id IN ({placeholders})", task_ids)
-            self.conn.execute(f"DELETE FROM task_execution_logs WHERE task_id IN ({placeholders})", task_ids)
+            # Explicitly detach for old upgraded schemas as well as modern FKs.
+            for table in ("task_events", "daily_entries", "task_execution_logs"):
+                self.conn.execute(f"UPDATE {table} SET task_id=NULL WHERE task_id IN ({placeholders})", task_ids)
             self.conn.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids)
             self._ensure_focus_for_mainline(int(task["mainline_id"]), commit=False)
         return task_ids
@@ -1733,6 +1748,15 @@ class Database:
         next_action: str = "",
         complete: bool = False,
     ) -> int:
+        with self.conn:
+            return self._add_task_execution_log(task_id, action=action, result=result,
+                                                next_action=next_action, complete=complete)
+
+    def _add_task_execution_log(
+        self, task_id: int, *, action: str, result: str = "",
+        next_action: str = "", complete: bool = False,
+    ) -> int:
+        """Write inside the caller's transaction (also used by experiment rounds)."""
         task = self.get_task(task_id)
         if not task:
             raise ValueError("任务不存在")
@@ -1774,7 +1798,6 @@ class Database:
         )
         if complete:
             self._set_daily_entry_completed(entry_id, True)
-        self.conn.commit()
         return int(cur.lastrowid)
 
     def task_execution_logs(self, task_id: int) -> list[sqlite3.Row]:

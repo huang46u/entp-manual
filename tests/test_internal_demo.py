@@ -16,6 +16,8 @@ class InternalDemoTests(unittest.TestCase):
             try:
                 populate_internal_demo(db)
                 self.assertEqual(validate_internal_demo(db), [])
+                for table in ("external_anchors", "experiments", "experiment_iterations", "waiting_items", "recovery_sessions", "worries", "daily_assessments"):
+                    self.assertTrue(db.row(f"SELECT 1 FROM {table} LIMIT 1"), table)
                 self.assertGreaterEqual(len(db.list_mainlines()), 5)
                 self.assertGreaterEqual(len(db.list_tasks()), 25)
                 self.assertGreaterEqual(

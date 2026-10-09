@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+from workspace_runtime import configure_workspace
+configure_workspace()
+
+import json
+import unittest
+from datetime import date
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import flet as ft
+
+from database import Database
+from flet_app import EntpFletApp
+from markdown_store import MarkdownStore
+from tests.desktop_e2e import _walk, _find
+
+
+class StructureUiTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.db = Database(self.root/"ui.db",personal_workspace=True)
+        self.task = self.db.create_task(self.db.current_mainline_id(),"算法全流程",is_today=True)
+        self.app = EntpFletApp.__new__(EntpFletApp)
+        a = self.app
+        a.db = self.db
+        a.markdown = MarkdownStore(self.root/"markdown")
+        a.current_mid = self.db.current_mainline_id()
+        a.active_index = a.NAV_CURRENT
+        a.selected_day = a.calendar_selected_day = date.today()
+        a.calendar_month = date.today().replace(day=1)
+        a.selected_task_id = self.task
+        a.today_collapsed = {}
+        a.rail = SimpleNamespace(selected_index=0)
+        a.quick_task_input = ft.TextField(value="尚未提交的任务")
+        a.quick_today_input = ft.TextField(value="尚未提交的今日输入")
+        a.inline_inspiration_input = ft.TextField(value="尚未提交的灵感")
+        a.content_switcher = ft.Container(ft.Column([a.quick_task_input]))
+        a.page = SimpleNamespace(controls=[a.content_switcher],overlay=[],update=lambda:None,
+                                  _dialogs=SimpleNamespace(controls=[]))
+        a._sync_markdown = lambda **kwargs:(a.markdown.sync_all(a.db),True)[1]
+        a._write_runtime_error = lambda *_:None
+        a._notify_error = lambda *_:None
+        a._structure_init()
+        self.views = []
+        def show(index):
+            a.active_index = index
+            self.views.append(index)
+            a._structure_route = None
+            a._structure_fields = {}
+            a._structure_flush = None
+        a.show_view = show
+
+    def tearDown(self):
+        self.db.close()
+        self.temp.cleanup()
+
+    def button(self,label):
+        for control in _walk(self.app.content_switcher.content):
+            if isinstance(control,(ft.FilledButton,ft.TextButton,ft.OutlinedButton)) and control.content==label:
+                return control
+        raise AssertionError(label)
+
+    def click(self,label):
+        self.button(label).on_click(None)
+
+    def test_research_scenario_two_iterations_and_reopen_resume_draft(self):
+        a = self.app
+        a.open_experiment(task_id=self.task)
+        a._structure_fields["question"].value = "网格变化是否符合预期？"
+        self.click("开始记录实验")
+        fields = a._structure_fields
+        fields["method"].value = "运行原算法"
+        fields["observation"].value = "非流形边 2"
+        fields["next_hypothesis"].value = "修改局部符号"
+        self.click("保存实际观察")
+        self.assertEqual(len(self.db.task_execution_logs(self.task)),1)
+        self.assertEqual(a._structure_fields,{})
+        self.click("继续下一次实验")
+        self.assertEqual(a._structure_fields["hypothesis"].value,"修改局部符号")
+        a._structure_fields["method"].value = "运行修正方案"
+        a._structure_fields["method"].on_change(None)
+        eid = self.db.row("SELECT id FROM experiments")[0]
+        self.db.close()
+        self.db = Database(self.root/"ui.db",personal_workspace=True)
+        a.db = self.db
+        a.open_experiment(experiment_id=eid)
+        self.assertEqual(a._structure_fields["method"].value,"运行修正方案")
+        a._structure_fields["observation"].value = "非流形边 0"
+        self.click("保存实际观察")
+        self.assertEqual([r["observation"] for r in self.db.experiment_iterations(eid)],["非流形边 2","非流形边 0"])
+        self.click("结束实验并生成总结")
+        self.assertIn("非流形边 0",a._structure_fields["summary"].value)
+        self.click("保存总结并结束")
+        self.assertNotEqual(self.db.get_task(self.task)["status"],"完成")
+
+    def test_waiting_scenario_form_check_then_actionable(self):
+        a = self.app
+        before = dict(self.db.get_task(self.task))
+        a.open_waiting()
+        f = a._structure_fields
+        for k,v in dict(title="等待薪酬",who="HR",check=self.db.today_iso(),task=str(self.task)).items():
+            f[k].value = v
+        self.click("保存等待事项")
+        wid = self.db.row("SELECT id FROM waiting_items")[0]
+        a._waiting_view()
+        self.assertEqual(self.db.row("SELECT status FROM waiting_items WHERE id=?",(wid,))[0],"check")
+        a.open_waiting(wid)
+        f = a._structure_fields
+        for k,v in dict(facts="收到方案",state="actionable",has_action="1",action="回复方案").items():
+            f[k].value = v
+        self.click("保存等待事项")
+        self.assertFalse(self.db.task_is_waiting(self.task))
+        self.assertEqual(dict(self.db.get_task(self.task)),before)
+
+    def test_recovery_keeps_same_tree_inputs_and_task_context(self):
+        a = self.app
+        a.open_experiment(task_id=self.task)
+        a._structure_fields["question"].value = "未提交的问题"
+        previous = a.content_switcher.content
+        a.enter_recovery()
+        self.assertFalse(a.content_switcher.visible)
+        self.assertIs(a.content_switcher.content,previous)
+        a._quiet_activity.value = "听音乐"
+        a.exit_quiet()
+        self.assertIs(a.content_switcher.content,previous)
+        self.assertTrue(a.content_switcher.visible)
+        self.assertEqual(a._structure_fields["question"].value,"未提交的问题")
+        self.assertEqual(a.quick_task_input.value,"尚未提交的任务")
+        self.assertEqual(a.selected_task_id,self.task)
+        self.assertEqual(self.db.row("SELECT activity FROM recovery_sessions")[0],"听音乐")
+
+    def test_recovery_restart_restores_route_and_exit_context(self):
+        a = self.app
+        a.open_waiting()
+        a._structure_fields["title"].value = "尚未保存的等待事项"
+        a.enter_recovery()
+        a._quiet_activity.value = "安静休息"
+        a._quiet_activity.on_change(None)
+        self.db.close()
+        self.db = Database(self.root/"ui.db",personal_workspace=True)
+        a.db = self.db
+        a._quiet_mode = None
+        a.page.controls = [a.content_switcher]
+        a.content_switcher.visible = True
+        a._restore_quiet_startup()
+        self.assertEqual(a._quiet_mode,"recovery")
+        self.assertEqual(a._structure_fields["title"].value,"尚未保存的等待事项")
+        a.exit_quiet()
+        self.assertTrue(a.content_switcher.visible)
+        self.assertEqual(self.db.get_setting("quiet_context"),"")
+
+    def test_skip_recovery_removes_facts_and_does_not_clear_work(self):
+        a = self.app
+        a.enter_recovery()
+        a._quiet_activity.value = "散步"
+        a._skip_recovery()
+        a.exit_quiet()
+        self.assertEqual(self.db.rows("SELECT * FROM recovery_sessions"),[])
+        self.assertEqual(self.db.rows("SELECT * FROM structure_events WHERE entity_type='recovery_sessions'"),[])
+        self.assertEqual(a.quick_today_input.value,"尚未提交的今日输入")
+
+    def test_recovery_restart_preserves_subtask_input_and_expanded_context(self):
+        a = self.app
+        a.expanded_task_ids = {self.task}
+        a.subtask_input_parent_id = self.task
+        subtask = ft.TextField(hint_text="添加子任务",value="尚未提交的子任务")
+        a.content_switcher.content = ft.Column([a.quick_task_input,subtask])
+        a.enter_recovery()
+        a._quiet_mode = None
+        a.expanded_task_ids = set()
+        a.subtask_input_parent_id = None
+        a.page.controls = [a.content_switcher]
+        def rebuild(index):
+            self.views.append(index)
+            a._structure_route = None
+            a.content_switcher.content = ft.Column([a.quick_task_input,ft.TextField(hint_text="添加子任务",value="")])
+        a.show_view = rebuild
+        a._restore_quiet_startup()
+        restored = next(c for c in _walk(a.content_switcher.content) if isinstance(c,ft.TextField) and c.hint_text=="添加子任务")
+        self.assertEqual(restored.value,"尚未提交的子任务")
+        self.assertEqual(a.expanded_task_ids,{self.task})
+        self.assertEqual(a.subtask_input_parent_id,self.task)
+        a.exit_quiet()
+
+    def test_quiet_shortcuts_cannot_change_work(self):
+        a = self.app
+        a.enter_recovery()
+        a._handle_task_keyboard_shortcut(SimpleNamespace(key="Enter",shift=True))
+        self.assertEqual(len(self.db.list_tasks()),1)
+        a.exit_quiet()
+
+    def test_skipping_locked_recovery_document_does_not_trap_user_in_mode(self):
+        a = self.app
+        a.enter_recovery()
+        a.markdown.sync_all(a.db)
+        blocked = a.markdown.path_for("recovery",a._quiet_session_id)
+        original = Path.unlink
+        def unlink(path,*args,**kwargs):
+            if path==blocked:
+                raise PermissionError("document locked")
+            return original(path,*args,**kwargs)
+        a._sync_markdown = lambda **_:a.markdown.sync_all(a.db,continue_on_error=True)
+        with patch.object(Path,"unlink",new=unlink):
+            a._skip_recovery()
+            self.assertIsNone(a._quiet_session_id)
+            self.assertTrue(a.markdown.last_sync_errors)
+            a.exit_quiet()
+            self.assertIsNone(a._quiet_mode)
+        a._sync_markdown()
+        self.assertFalse(blocked.exists())
+
+    def test_evidence_import_is_in_workspace_and_backup_covers_file(self):
+        a = self.app
+        eid = self.db.create_experiment(self.task,"证据")
+        iid = self.db.start_iteration(eid)
+        source = self.root/"output.log"
+        source.write_text("Edge-CD=0.1",encoding="utf-8")
+        target = a.import_experiment_file(iid,source)
+        self.assertTrue(target.is_relative_to(a.markdown.root))
+        self.assertEqual(target.read_text(encoding="utf-8"),"Edge-CD=0.1")
+        self.assertEqual(self.db.row("SELECT kind FROM experiment_evidence")[0],"attachment")
+
+    def test_assessment_clear_and_worry_create_are_real_forms(self):
+        a = self.app
+        a.open_assessment(self.db.today_iso())
+        a._structure_fields["pressure"].value = "高"
+        self.click("保存状态记录")
+        a.open_assessment(self.db.today_iso())
+        a._structure_fields["pressure"].value = ""
+        self.click("保存状态记录")
+        self.assertIsNone(self.db.row("SELECT pressure FROM daily_assessments")[0])
+        a.open_worry()
+        a._structure_fields["content"].value = "现实问题"
+        self.click("保存")
+        self.assertEqual(self.db.row("SELECT content FROM worries")[0],"现实问题")
+        self.assertEqual(self.db.list_thoughts(),[])
+
+
+if __name__=="__main__":
+    unittest.main()
