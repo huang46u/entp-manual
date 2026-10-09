@@ -171,7 +171,7 @@ class StructureUI:
         controls.extend([ft.TextButton("自愿记录状态",on_click=lambda _:self.open_assessment(day)), self._structure_actions()])
         return card(controls)
 
-    def open_anchor(self, anchor_id=None):
+    def open_anchor(self, anchor_id=None, *, default_task_id=None):
         row = self.db.row("SELECT * FROM external_anchors WHERE id=?",(anchor_id,)) if anchor_id else None
         def value(key, default=""):
             return row[key] if row else default
@@ -183,7 +183,7 @@ class StructureUI:
         end_day = field("结束日期（可选）",datetime.fromisoformat(row["end_at"]).date().isoformat() if row and row["end_at"] else "")
         end = field("结束 HH:MM（事件可选）",datetime.fromisoformat(row["end_at"]).strftime("%H:%M") if row and row["end_at"] else "")
         consequence = field("未处理的实际后果（可选）",value("consequence"),multiline=True)
-        task = self._task_selector(value("task_id",None))
+        task = self._task_selector(value("task_id",default_task_id))
         status = select("状态",[("active","有效"),("ended","已结束"),("cancelled","已取消")],value("status","active"))
         fields = dict(title=title,source=source,kind=kind,day=day,start=start,end_day=end_day,end=end,consequence=consequence,task=task,status=status)
         def save(_):

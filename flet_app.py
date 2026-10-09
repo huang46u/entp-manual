@@ -1592,6 +1592,8 @@ class EntpFletApp(StructureUI):
         body.controls.append(ft.Row([
             *([ft.TextButton("进入实验模式", on_click=lambda _: self.open_experiment(task_id=int(focus["id"]))),
                ft.TextButton("实验历史", on_click=lambda _: self.open_task_experiments(int(focus["id"])))] if focus else []),
+            ft.TextButton("添加外部锚点", on_click=lambda _: self.open_anchor(
+                default_task_id=int(focus["id"]) if focus else None)),
         ], wrap=True))
         body.controls.append(self._structure_actions())
         return ft.Card(

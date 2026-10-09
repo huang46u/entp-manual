@@ -68,6 +68,39 @@ class StructureUiTests(unittest.TestCase):
     def click(self,label):
         self.button(label).on_click(None)
 
+    def test_focus_anchor_shortcut_links_task_and_returns_to_current_view(self):
+        a = self.app
+        before = dict(self.db.get_task(self.task))
+        a.inspiration_capture_open = False
+        a.content_switcher.content = a._focus_card(self.db.get_task(self.task))
+        self.click("添加外部锚点")
+        f = a._structure_fields
+        self.assertEqual(f["task"].value,str(self.task))
+        f["title"].value = "论文提交"
+        f["source"].value = "会议组织方"
+        f["kind"].value = "deadline"
+        self.click("保存外部锚点")
+        self.assertEqual(self.views[-1],a.NAV_CURRENT)
+        anchor = self.db.structure_day(self.db.today_iso())["anchors"][0]
+        self.assertEqual(anchor["task_id"],self.task)
+        self.assertEqual(dict(self.db.get_task(self.task)),before)
+        self.assertEqual(len(self.db.list_tasks()),1)
+
+    def test_anchor_shortcut_without_focus_and_edit_preserves_existing_link(self):
+        a = self.app
+        a.inspiration_capture_open = False
+        a.content_switcher.content = a._focus_card(None)
+        self.click("添加外部锚点")
+        self.assertEqual(a._structure_fields["task"].value,"")
+        a.open_anchor(default_task_id=self.task)
+        a._structure_fields["task"].value = ""
+        a._structure_fields["title"].value = "面试"
+        a._structure_fields["source"].value = "公司"
+        self.click("保存外部锚点")
+        aid = self.db.row("SELECT id FROM external_anchors")[0]
+        a.open_anchor(aid,default_task_id=self.task)
+        self.assertEqual(a._structure_fields["task"].value,"")
+
     def test_research_scenario_two_iterations_and_reopen_resume_draft(self):
         a = self.app
         a.open_experiment(task_id=self.task)
