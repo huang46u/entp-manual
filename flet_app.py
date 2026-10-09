@@ -52,6 +52,7 @@ from ui_theme import (
     GREEN,
     GREEN_SOFT,
     INK,
+    INK_SOFT,
     LINE,
     MUTED,
     READING_WIDTH,
@@ -59,6 +60,7 @@ from ui_theme import (
     SIDEBAR,
     SURFACE,
     WIDE_WIDTH,
+    surface,
     constrained,
     group_label,
     rounded,
@@ -267,15 +269,139 @@ def mainline_goal_guide_button() -> ft.IconButton:
     )
 
 
+class SideNav:
+    """Grouped sidebar navigation.
+
+    It keeps NavigationRail's ``selected_index`` contract (the rest of the app
+    and the tests only read and assign that) while allowing section labels,
+    a pinned rhythm menu and an icon-only compact mode for narrow windows.
+    """
+
+    WIDTH = 228
+    COMPACT_WIDTH = 76
+
+    def __init__(self, *, sections, on_select, rhythm: ft.Control, footer: list[ft.Control]) -> None:
+        self.compact = False
+        self._index = 0
+        self._items: dict[int, tuple[ft.Container, ft.Icon, ft.Text, object, object, str]] = {}
+        self._labels: list[ft.Control] = []
+        self._brand_text = ft.Column(
+            [
+                ft.Text("ENTP 自强手册", size=15, weight=ft.FontWeight.W_700, color=INK),
+                ft.Text("好奇心动力回流系统", size=12, color=MUTED),
+            ],
+            spacing=1,
+        )
+        brand = ft.Container(
+            ft.Row(
+                [
+                    ft.Image(src="app-icon.png", width=40, height=40, fit=ft.BoxFit.COVER, border_radius=13),
+                    self._brand_text,
+                ],
+                spacing=12,
+            ),
+            padding=ft.Padding.only(left=6, top=6, bottom=14),
+        )
+        nav: list[ft.Control] = []
+        for title, entries in sections:
+            label = ft.Container(
+                group_label(title),
+                padding=ft.Padding.only(left=12, top=12, bottom=4),
+            )
+            self._labels.append(label)
+            nav.append(label)
+            for index, text, icon, selected_icon in entries:
+                icon_control = ft.Icon(icon, size=21, color=INK_SOFT)
+                text_control = ft.Text(text, size=14, weight=ft.FontWeight.W_500, color=INK_SOFT)
+                item = ft.Container(
+                    ft.Row([icon_control, text_control], spacing=12),
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=10),
+                    border_radius=12,
+                    ink=True,
+                    on_click=lambda _, i=index: on_select(i),
+                )
+                self._items[index] = (item, icon_control, text_control, icon, selected_icon, text)
+                nav.append(item)
+        self._footer = footer
+        self._status = ft.Row(
+            [
+                ft.Container(width=7, height=7, bgcolor=GREEN, border_radius=99),
+                ft.Text("本地数据已连接", size=12, color=FAINT),
+            ],
+            spacing=8,
+        )
+        self._footer_column = ft.Column(
+            [*footer, ft.Container(self._status, padding=ft.Padding.only(left=12, top=2))],
+            spacing=0,
+        )
+        self.control = ft.Container(
+            ft.Column(
+                [
+                    brand,
+                    *nav,
+                    ft.Container(expand=True),
+                    rhythm,
+                    ft.Divider(height=17, color=LINE),
+                    self._footer_column,
+                ],
+                spacing=2,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            ),
+            width=self.WIDTH,
+            padding=ft.Padding.only(left=12, right=12, top=12, bottom=12),
+            bgcolor=SIDEBAR,
+            border=ft.Border.only(right=ft.BorderSide(1, LINE)),
+        )
+        self._restyle()
+
+    @property
+    def selected_index(self) -> int:
+        return self._index
+
+    @selected_index.setter
+    def selected_index(self, value: int) -> None:
+        self._index = int(value)
+        self._restyle()
+
+    def _restyle(self) -> None:
+        for index, (item, icon_control, text_control, icon, selected_icon, text) in self._items.items():
+            selected = index == self._index
+            item.bgcolor = BLUE_SOFT if selected else None
+            icon_control.icon = selected_icon if selected else icon
+            icon_control.color = BLUE_DARK if selected else INK_SOFT
+            text_control.color = BLUE_DARK if selected else INK_SOFT
+            text_control.weight = ft.FontWeight.W_700 if selected else ft.FontWeight.W_500
+            text_control.visible = not self.compact
+            item.tooltip = text if self.compact else None
+            item.alignment = ft.Alignment.CENTER if self.compact else None
+
+    def set_compact(self, compact: bool) -> None:
+        self.compact = compact
+        self.control.width = self.COMPACT_WIDTH if compact else self.WIDTH
+        self.control.padding = (
+            ft.Padding.symmetric(horizontal=10, vertical=12)
+            if compact
+            else ft.Padding.only(left=12, right=12, top=12, bottom=12)
+        )
+        self._brand_text.visible = not compact
+        for label in self._labels:
+            label.content.visible = not compact
+            label.padding = ft.Padding.only(top=8) if compact else ft.Padding.only(left=12, top=12, bottom=4)
+        self._footer_column.visible = not compact
+        self._restyle()
+
+
 class EntpFletApp(StructureUI):
     TASK_DRAG_GROUP = "task-hierarchy"
     """Flet UI shell; the existing Database remains the single source of truth."""
 
     NAV_CURRENT = 0
-    NAV_VAULT = 1
+    NAV_TODAY = 1
     NAV_IDEAS = 2
-    NAV_TODAY = 3
-    NAV_CALENDAR = 4
+    NAV_WAITING = 3
+    NAV_VAULT = 4
+    NAV_CALENDAR = 5
+    COMPACT_NAV_BELOW = 1100
 
     def __init__(
         self,
@@ -471,12 +597,7 @@ class EntpFletApp(StructureUI):
         self.page.add(
             ft.Row(
                 [
-                    ft.Container(
-                        self.rail,
-                        width=236,
-                        bgcolor=SIDEBAR,
-                        border=ft.Border.only(right=ft.BorderSide(1, LINE)),
-                    ),
+                    self.rail.control,
                     ft.Container(
                         self.content_switcher,
                         expand=True,
@@ -497,7 +618,9 @@ class EntpFletApp(StructureUI):
             "waiting": self.NAV_WAITING,
         }
         self._structure_init()
+        self.page.on_resize = self._wrap_event_handler(self._apply_nav_density, "调整侧边栏宽度失败")
         self.show_view(initial_views.get(initial_view, self.NAV_CURRENT))
+        self._apply_nav_density()
         self._restore_quiet_startup()
         self._start_tray()
         if self.start_hidden and self.tray_available:
@@ -1039,135 +1162,57 @@ class EntpFletApp(StructureUI):
         self._close_database()
         await self.page.window.destroy()
 
-    def _build_rail(self) -> ft.NavigationRail:
-        brand = ft.Container(
-            content=ft.Row(
-                [
-                    ft.Container(
-                        content=ft.Image(
-                            src="app-icon.png",
-                            width=42,
-                            height=42,
-                            fit=ft.BoxFit.COVER,
-                            border_radius=14,
-                        ),
-                        width=42,
-                        height=42,
-                        alignment=ft.Alignment.CENTER,
-                        border_radius=14,
-                    ),
-                    ft.Column(
-                        [
-                            ft.Text("ENTP 自强手册", size=15, weight=ft.FontWeight.W_700, color=INK),
-                            ft.Text("好奇心动力回流系统", size=12, color=MUTED),
-                        ],
-                        spacing=1,
-                    ),
-                ],
-                spacing=12,
-            ),
-            padding=ft.Padding.only(left=18, right=12, top=16, bottom=12),
-        )
+    def _build_rail(self) -> "SideNav":
         self.update_button = ft.TextButton(
             f"检查更新 · {APP_VERSION}",
             icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
             tooltip="从 GitHub Releases 检查并安装新版本",
             on_click=self.handle_update_button,
-            style=ft.ButtonStyle(color=MUTED),
+            style=ft.ButtonStyle(color=MUTED, text_style=ft.TextStyle(size=12)),
             disabled=os.environ.get("ENTP_WORKSPACE_LOCAL") == "1",
         )
         if os.environ.get("ENTP_WORKSPACE_LOCAL") == "1":
             self.update_button.content = f"本地源码版 · {APP_VERSION}"
             self.update_button.tooltip = "此部署通过源码更新，数据保存在当前 workspace"
-        return ft.NavigationRail(
-            extended=True,
-            min_width=82,
-            min_extended_width=236,
-            selected_index=0,
-            bgcolor=SIDEBAR,
-            indicator_color=BLUE_SOFT,
-            indicator_shape=rounded(14),
-            use_indicator=True,
-            label_type=ft.NavigationRailLabelType.NONE,
-            selected_label_text_style=ft.TextStyle(size=14, weight=ft.FontWeight.W_700, color=BLUE_DARK),
-            unselected_label_text_style=ft.TextStyle(size=14, weight=ft.FontWeight.W_500, color="#515762"),
-            leading=brand,
-            destinations=[
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.FLAG_OUTLINED,
-                    selected_icon=ft.Icons.FLAG_ROUNDED,
-                    label="当前主线",
-                    padding=8,
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.INVENTORY_2_OUTLINED,
-                    selected_icon=ft.Icons.INVENTORY_2_ROUNDED,
-                    label="我的主线任务保管箱",
-                    padding=8,
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.LIGHTBULB_OUTLINE_ROUNDED,
-                    selected_icon=ft.Icons.LIGHTBULB_ROUNDED,
-                    label="候审区",
-                    padding=8,
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.CHECKLIST_ROUNDED,
-                    selected_icon=ft.Icons.FACT_CHECK_ROUNDED,
-                    label="今日清单",
-                    padding=8,
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.CALENDAR_MONTH_OUTLINED,
-                    selected_icon=ft.Icons.CALENDAR_MONTH_ROUNDED,
-                    label="完成日历",
-                    padding=8,
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.HOURGLASS_EMPTY_ROUNDED,
-                    label="等待事项",
-                    padding=8,
-                ),
-            ],
-            trailing=ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Divider(height=1, color=LINE),
-                        *(
-                            [
-                                ft.TextButton(
-                                    "隐藏到托盘",
-                                    icon=ft.Icons.VISIBILITY_OFF_OUTLINED,
-                                    on_click=self.hide_to_tray,
-                                    tooltip="隐藏任务栏图标；从系统托盘恢复",
-                                )
-                            ]
-                            if self.tray_available
-                            else []
-                        ),
-                        self.update_button,
-                        ft.Row(
-                            [
-                                ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=19, color=MUTED),
-                                ft.Text("每个小块都有笔记", size=12, color=MUTED),
-                            ],
-                            spacing=9,
-                        ),
-                        ft.Row(
-                            [
-                                ft.Container(width=8, height=8, bgcolor=GREEN, border_radius=99),
-                                ft.Text("本地数据已连接", size=12, color=MUTED),
-                            ],
-                            spacing=9,
-                        ),
-                    ],
-                    spacing=8,
-                ),
-                padding=ft.Padding.only(left=22, right=16, bottom=12),
-            ),
-            pin_trailing_to_bottom=True,
-            on_change=lambda e: self.show_view(int(e.control.selected_index)),
+        self.rhythm_holder = ft.Container()
+        self.tray_button = (
+            ft.TextButton(
+                "隐藏到托盘",
+                icon=ft.Icons.VISIBILITY_OFF_OUTLINED,
+                on_click=self.hide_to_tray,
+                tooltip="隐藏任务栏图标；从系统托盘恢复",
+                style=ft.ButtonStyle(color=MUTED, text_style=ft.TextStyle(size=12)),
+            )
+            if self.tray_available
+            else None
         )
+        return SideNav(
+            sections=[
+                ("执行", [
+                    (self.NAV_CURRENT, "当前主线", ft.Icons.FLAG_OUTLINED, ft.Icons.FLAG_ROUNDED),
+                    (self.NAV_TODAY, "今日清单", ft.Icons.CHECKLIST_ROUNDED, ft.Icons.FACT_CHECK_ROUNDED),
+                ]),
+                ("收纳", [
+                    (self.NAV_IDEAS, "候审区", ft.Icons.LIGHTBULB_OUTLINE_ROUNDED, ft.Icons.LIGHTBULB_ROUNDED),
+                    (self.NAV_WAITING, "等待事项", ft.Icons.HOURGLASS_EMPTY_ROUNDED, ft.Icons.HOURGLASS_TOP_ROUNDED),
+                    (self.NAV_VAULT, "主线保管箱", ft.Icons.INVENTORY_2_OUTLINED, ft.Icons.INVENTORY_2_ROUNDED),
+                ]),
+                ("回顾", [
+                    (self.NAV_CALENDAR, "完成日历", ft.Icons.CALENDAR_MONTH_OUTLINED, ft.Icons.CALENDAR_MONTH_ROUNDED),
+                ]),
+            ],
+            on_select=self.show_view,
+            rhythm=self.rhythm_holder,
+            footer=[c for c in (self.tray_button, self.update_button) if c is not None],
+        )
+
+    def _apply_nav_density(self, _=None) -> None:
+        width = float(self.page.width or 0)
+        compact = 0 < width < self.COMPACT_NAV_BELOW
+        if compact != self.rail.compact:
+            self.rail.set_compact(compact)
+            self.rhythm_holder.content = self._rhythm_menu(compact=compact)
+            self.page.update()
 
     async def handle_update_button(self, _=None) -> None:
         if self.available_release is not None:
@@ -1366,6 +1411,8 @@ class EntpFletApp(StructureUI):
         self.db.refresh_waiting_checks()
         self.active_index = index
         self.rail.selected_index = index
+        if hasattr(self, "rhythm_holder"):
+            self.rhythm_holder.content = self._rhythm_menu(compact=self.rail.compact)
         if index == self.NAV_CURRENT:
             self.refresh_current_sections(update=False)
             view = self._current_view()
@@ -1411,8 +1458,8 @@ class EntpFletApp(StructureUI):
                 ft.ResponsiveRowBreakpoint.SM: 12,
                 ft.ResponsiveRowBreakpoint.MD: 12,
                 ft.ResponsiveRowBreakpoint.LG: 7,
-                ft.ResponsiveRowBreakpoint.XL: 7,
-                ft.ResponsiveRowBreakpoint.XXL: 7,
+                ft.ResponsiveRowBreakpoint.XL: 8,
+                ft.ResponsiveRowBreakpoint.XXL: 9,
             },
             padding=ft.Padding.only(right=8),
         )
@@ -1423,8 +1470,8 @@ class EntpFletApp(StructureUI):
                 ft.ResponsiveRowBreakpoint.SM: 12,
                 ft.ResponsiveRowBreakpoint.MD: 12,
                 ft.ResponsiveRowBreakpoint.LG: 5,
-                ft.ResponsiveRowBreakpoint.XL: 5,
-                ft.ResponsiveRowBreakpoint.XXL: 5,
+                ft.ResponsiveRowBreakpoint.XL: 4,
+                ft.ResponsiveRowBreakpoint.XXL: 3,
             },
             padding=ft.Padding.only(left=8),
         )
@@ -1520,29 +1567,22 @@ class EntpFletApp(StructureUI):
                         ],
                         spacing=10,
                     ),
-                    ft.Text(str(focus["title"]), size=21, weight=ft.FontWeight.W_700, color=INK),
-                    ft.Container(
-                        content=ft.Row(
-                            [
-                                ft.Icon(ft.Icons.NEAR_ME_ROUNDED, size=20, color=BLUE),
-                                ft.Column(
-                                    [
-                                        ft.Text("看看现实反馈", size=12, color=MUTED),
-                                        ft.Text(
-                                            "选择可以验证的工作，记录实际发生的变化",
-                                            size=16,
-                                            weight=ft.FontWeight.W_600,
-                                            color=INK,
-                                        ),
-                                    ],
-                                    spacing=2,
-                                    expand=True,
-                                ),
-                            ]
-                        ),
-                        padding=14,
-                        bgcolor=BLUE_SOFT,
-                        border_radius=14,
+                    ft.Column(
+                        [
+                            ft.Container(
+                                ft.Text(str(focus["title"]), size=23, weight=ft.FontWeight.W_700, color=INK),
+                                on_click=lambda _: self.select_task(task_id),
+                                tooltip="打开任务详情",
+                            ),
+                            ft.Row(
+                                [
+                                    ft.Icon(ft.Icons.NEAR_ME_ROUNDED, size=15, color=BLUE),
+                                    ft.Text("看看现实反馈：选择可以验证的工作，记录实际发生的变化", size=13, color=MUTED),
+                                ],
+                                spacing=6,
+                            ),
+                        ],
+                        spacing=6,
                     ),
                     ft.Row(
                         [
@@ -1613,20 +1653,11 @@ class EntpFletApp(StructureUI):
         )
         body.controls.append(ft.Divider(height=1, color=LINE))
         body.controls.append(
-            ft.Row(
-                [
-                    ft.Row([group_label("记录"), *record_tools], spacing=2, tight=True, wrap=True,
-                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    self._structure_actions(),
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                wrap=True,
-                run_spacing=6,
-            )
+            ft.Row([group_label("记录"), *record_tools], spacing=2, wrap=True,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER)
         )
         return ft.Card(
-            content=ft.Container(body, padding=20),
+            content=ft.Container(body, padding=ft.Padding.only(left=24, right=24, top=20, bottom=12)),
             elevation=0,
             bgcolor=SURFACE,
             shape=rounded(18),
@@ -1652,14 +1683,14 @@ class EntpFletApp(StructureUI):
                 )
             ),
         ]
-        rows.extend(
+        rows.append(self._list_panel([
             self._task_row(
                 task,
                 completed=False,
                 subtasks=children_by_parent.get(int(task["id"]), []),
             )
             for task in active
-        )
+        ]))
         if completed:
             rows.append(
                 self._task_promotion_target(
@@ -1669,15 +1700,29 @@ class EntpFletApp(StructureUI):
                     )
                 )
             )
-            rows.extend(
+            rows.append(self._list_panel([
                 self._task_row(
                     task,
                     completed=True,
                     subtasks=children_by_parent.get(int(task["id"]), []),
                 )
                 for task in completed
-            )
+            ]))
         return rows
+
+    @staticmethod
+    def _list_panel(rows: list[ft.Control]) -> ft.Control:
+        """One calm panel per list; rows are separated by hairlines, not boxes."""
+        if not rows:
+            return ft.Container()
+        for row in rows[:-1]:
+            row.border = ft.Border.only(bottom=ft.BorderSide(1, "#EEF0F3"))
+        return surface(
+            ft.Column(rows, spacing=0, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+            radius=16,
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+        )
 
     def _task_draggable(
         self,
@@ -1873,12 +1918,12 @@ class EntpFletApp(StructureUI):
                         title,
                         size=16,
                         weight=ft.FontWeight.W_500,
-                        color="#A5A9B2" if completed else INK,
+                        color="#A5A9B2" if completed else (MUTED if focused else INK),
                         max_lines=2,
                         overflow=ft.TextOverflow.ELLIPSIS,
                         expand=True,
                     ),
-                    *([tag("当前", color=GREEN, bgcolor=GREEN_SOFT, icon=ft.Icons.PLAY_ARROW_ROUNDED)]
+                    *([tag("正在上方推进", color=GREEN, bgcolor=GREEN_SOFT, icon=ft.Icons.PLAY_ARROW_ROUNDED)]
                       if focused else []),
                     *([tag(f"{done_subtasks}/{len(subtasks)}", color=BLUE, bgcolor=BLUE_SOFT)]
                       if subtasks else []),
@@ -1895,7 +1940,7 @@ class EntpFletApp(StructureUI):
             ),
             height=54,
             padding=ft.Padding.only(left=4, right=14),
-            bgcolor="#F7F8FA" if selected else SURFACE,
+            bgcolor="#F7F8FA" if selected else None,
             border_radius=10,
             on_click=lambda _, tid=task_id: self.select_task(tid),
         )
@@ -1913,11 +1958,8 @@ class EntpFletApp(StructureUI):
                 spacing=0,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             ),
-            bgcolor=SURFACE,
-            border=ft.Border.all(1, "#BFE3CC" if focused else LINE),
-            border_radius=14,
-            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-            margin=ft.Margin.only(bottom=6),
+            bgcolor="#F6FBF8" if focused else None,
+            padding=ft.Padding.symmetric(horizontal=4, vertical=1),
         )
 
     def _task_detail_dialog(self, task) -> ft.AlertDialog:
@@ -2421,7 +2463,7 @@ class EntpFletApp(StructureUI):
             border=ft.Border.all(1, LINE),
             border_radius=14,
         )
-        return self._page_shell(
+        return self._page_shell(constrained(
             ft.Column(
                 [
                     ft.Row(
@@ -2463,8 +2505,9 @@ class EntpFletApp(StructureUI):
                 ],
                 spacing=20,
                 scroll=ft.ScrollMode.AUTO,
-            )
-        )
+            ),
+            WIDE_WIDTH,
+        ))
 
     def open_ideas_archive(self) -> None:
         self.selected_thought_id = None
@@ -3111,14 +3154,14 @@ class EntpFletApp(StructureUI):
         )
 
     def _vault_view(self) -> ft.Container:
-        return self._page_shell(
+        return self._page_shell(constrained(
             ft.Column(
                 [
                     ft.Column(
                         [
                             ft.Column(
                                 [
-                                    ft.Text("我的主线任务保管箱", size=28, weight=ft.FontWeight.W_700, color=INK),
+                                    ft.Text("主线保管箱", size=28, weight=ft.FontWeight.W_700, color=INK),
                                     ft.Text("其他主线留在这里，不与正在执行的事情争夺注意力。", size=16, color=MUTED),
                                 ],
                                 spacing=8,
@@ -3170,8 +3213,9 @@ class EntpFletApp(StructureUI):
                 ],
                 spacing=26,
                 scroll=ft.ScrollMode.AUTO,
-            )
-        )
+            ),
+            WIDE_WIDTH,
+        ))
 
     def refresh_vault(self, *, update: bool = True) -> None:
         current_id = self.db.current_mainline_id()
@@ -4097,7 +4141,7 @@ class EntpFletApp(StructureUI):
 
         body = ft.Container(
             content=ft.Column(
-                [self._today_header(), self._today_structure(selected_iso), input_or_history, *groups],
+                [self._today_header(), input_or_history, self._today_structure(selected_iso), *groups],
                 spacing=14,
                 scroll=ft.ScrollMode.AUTO,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -4139,15 +4183,20 @@ class EntpFletApp(StructureUI):
                     style=ft.ButtonStyle(color=BLUE),
                 )
             )
-        rows = [] if collapsed else [
-            self._daily_entry_row(
-                entry,
-                overdue=overdue,
-                completed=completed,
-                editable=editable,
+        rows: list[ft.Control] = []
+        previous_mainline = None
+        for entry in [] if collapsed else entries:
+            mainline = str(entry["mainline_name"] or "收集箱")
+            rows.append(
+                self._daily_entry_row(
+                    entry,
+                    overdue=overdue,
+                    completed=completed,
+                    editable=editable,
+                    show_mainline=mainline != previous_mainline,
+                )
             )
-            for entry in entries
-        ]
+            previous_mainline = mainline
         header = ft.Container(
             ft.Row(header_controls, spacing=6),
             padding=ft.Padding.only(top=4, bottom=2),
@@ -4157,9 +4206,9 @@ class EntpFletApp(StructureUI):
         return ft.Column(
             [
                 header,
-                *rows,
+                *([self._list_panel(rows)] if rows else []),
             ],
-            spacing=0,
+            spacing=4,
         )
 
     def _daily_entry_row(
@@ -4169,6 +4218,7 @@ class EntpFletApp(StructureUI):
         overdue: bool,
         completed: bool,
         editable: bool,
+        show_mainline: bool = True,
     ) -> ft.Control:
         entry_id = int(entry["id"])
         task_id = int(entry["task_id"]) if entry["task_id"] else None
@@ -4213,6 +4263,7 @@ class EntpFletApp(StructureUI):
                 size=13,
                 color="#C2C5CB" if completed else "#989DA6",
                 max_lines=1,
+                visible=show_mainline,
             )
         ]
         if task_id is not None:
@@ -4285,7 +4336,6 @@ class EntpFletApp(StructureUI):
             ),
             height=54,
             padding=ft.Padding.only(left=4, right=14),
-            bgcolor=SURFACE,
             border_radius=10,
             on_click=(
                 (lambda _, tid=task_id: self.select_task(tid))
@@ -4317,11 +4367,7 @@ class EntpFletApp(StructureUI):
                 spacing=0,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             ),
-            bgcolor=SURFACE,
-            border=ft.Border.all(1, LINE),
-            border_radius=14,
-            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-            margin=ft.Margin.only(bottom=6),
+            padding=ft.Padding.symmetric(horizontal=4, vertical=1),
         )
 
     def quick_add_today_task(self, event) -> None:

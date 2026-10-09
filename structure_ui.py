@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 import flet as ft
@@ -139,7 +139,7 @@ WAIT_STYLES = {
 
 
 class StructureUI:
-    NAV_WAITING = 5
+    NAV_WAITING = 3
 
     def _structure_init(self):
         self._quiet_mode = None
@@ -149,20 +149,82 @@ class StructureUI:
         self._waiting_expanded = set()
         self.db.refresh_waiting_checks()
 
-    def _structure_actions(self):
+    def _rhythm_menu(self, *, compact=False):
+        """Global pacing control pinned to the sidebar.
+
+        Advance / wait, recovery and quiet are app-wide states, so they live
+        in one place instead of being repeated on every page.
+        """
         mode = self.db.get_setting("activity_mode") or "advance"
         waiting = mode=="wait"
-        return ft.Row([
-            tag("当前方式：等待" if waiting else "当前方式：推进",
-                color=AMBER if waiting else GREEN, bgcolor=AMBER_SOFT if waiting else GREEN_SOFT,
-                icon=ft.Icons.HOURGLASS_TOP_ROUNDED if waiting else ft.Icons.PLAY_ARROW_ROUNDED),
-            tool_button("切换为等待" if not waiting else "重新进入推进", ft.Icons.SWAP_HORIZ_ROUNDED,
-                        lambda _: self.set_activity_mode("wait" if not waiting else "advance")),
-            ft.Container(width=1, height=18, bgcolor=LINE, margin=ft.Margin.symmetric(horizontal=4)),
-            tool_button("进入恢复状态", ft.Icons.SPA_OUTLINED, lambda _: self.enter_recovery()),
-            tool_button("担忧收纳", ft.Icons.INBOX_OUTLINED, lambda _: self.open_worries()),
-            tool_button("安静一下", ft.Icons.SELF_IMPROVEMENT_ROUNDED, lambda _: self.enter_quiet_worry()),
-        ], wrap=True, spacing=2, run_spacing=4, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        color, soft = (AMBER, AMBER_SOFT) if waiting else (GREEN, GREEN_SOFT)
+        icon = ft.Icons.HOURGLASS_TOP_ROUNDED if waiting else ft.Icons.PLAY_ARROW_ROUNDED
+        def item(label, item_icon, handler):
+            return ft.PopupMenuItem(content=label, icon=item_icon, on_click=handler)
+        items = [
+            item("重新进入推进" if waiting else "切换为等待", ft.Icons.SWAP_HORIZ_ROUNDED,
+                 lambda _: self.set_activity_mode("advance" if waiting else "wait")),
+            ft.PopupMenuItem(),
+            item("进入恢复状态", ft.Icons.SPA_OUTLINED, lambda _: self.enter_recovery()),
+            item("担忧收纳", ft.Icons.INBOX_OUTLINED, lambda _: self.open_worries()),
+            item("安静一下", ft.Icons.SELF_IMPROVEMENT_ROUNDED, lambda _: self.enter_quiet_worry()),
+        ]
+        badge = icon_badge(icon, color=color, bgcolor=soft, size=32)
+        if compact:
+            face = ft.Container(badge, alignment=ft.Alignment.CENTER, padding=ft.Padding.symmetric(vertical=4))
+        else:
+            face = surface(ft.Row([
+                badge,
+                ft.Column([ft.Text("当前节奏", size=11, color=FAINT),
+                           ft.Text("等待中" if waiting else "推进中", size=14, weight=ft.FontWeight.W_700, color=INK)],
+                          spacing=0, tight=True, expand=True),
+                ft.Icon(ft.Icons.UNFOLD_MORE_ROUNDED, size=18, color=FAINT),
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=8), radius=14)
+        return ft.PopupMenuButton(content=face, items=items, tooltip="推进 / 等待、恢复状态、担忧收纳、安静一下",
+                                  menu_position=ft.PopupMenuPosition.OVER, shape=rounded(14), bgcolor=SURFACE)
+
+    def _date_field(self, label, value=""):
+        """Text date field with a calendar button; typing YYYY-MM-DD still works."""
+        control = field(label, value)
+        control.hint_text = "YYYY-MM-DD"
+        def chosen(event):
+            picked = event.control.value
+            if isinstance(picked, datetime):
+                picked = (picked.astimezone() if picked.tzinfo else picked).date()
+            if picked:
+                control.value = picked.isoformat()
+                control.update()
+        def pick(_):
+            try:
+                current = date.fromisoformat((control.value or "").strip())
+            except ValueError:
+                current = date.today()
+            self.page.show_dialog(ft.DatePicker(value=current, first_date=date(2000, 1, 1), last_date=date(2100, 12, 31),
+                                                help_text=label, confirm_text="确定", cancel_text="取消", on_change=chosen))
+        control.suffix_icon = ft.IconButton(ft.Icons.CALENDAR_MONTH_OUTLINED, tooltip="选择日期", icon_size=18,
+                                       icon_color=MUTED, on_click=pick)
+        return control
+
+    def _time_field(self, label, value=""):
+        """Text HH:MM field with a clock button."""
+        control = field(label, value)
+        control.hint_text = "HH:MM"
+        def chosen(event):
+            if event.control.value:
+                control.value = event.control.value.strftime("%H:%M")
+                control.update()
+        def pick(_):
+            try:
+                current = datetime.strptime((control.value or "").strip(), "%H:%M").time()
+            except ValueError:
+                current = time(9, 0)
+            self.page.show_dialog(ft.TimePicker(value=current, help_text=label,
+                                                hour_format=ft.TimePickerHourFormat.H24, confirm_text="确定",
+                                                cancel_text="取消", on_change=chosen))
+        control.suffix_icon = ft.IconButton(ft.Icons.SCHEDULE_ROUNDED, tooltip="选择时间", icon_size=18,
+                                       icon_color=MUTED, on_click=pick)
+        return control
 
     def set_activity_mode(self, mode):
         if mode not in ("advance","wait"):
@@ -189,7 +251,6 @@ class StructureUI:
         ], spacing=10, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.content_switcher.content = self._structure_shell(ft.Column([
             header, card(controls),
-            ft.Container(self._structure_actions(), padding=ft.Padding.only(left=6)),
         ], spacing=16, scroll=ft.ScrollMode.AUTO, expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH))
         self.page.update()
 
@@ -219,16 +280,48 @@ class StructureUI:
         self._sync_markdown()
         self._structure_back()
 
+    def toggle_today_structure(self):
+        self._today_structure_open = not getattr(self,"_today_structure_open",False)
+        self.show_view(self.active_index)
+
     def _today_structure(self, day):
         facts = self.db.structure_day(day)
         is_today = day==self.db.today_iso()
+        is_open = getattr(self,"_today_structure_open",False)
+        anchors = sorted(facts["anchors"], key=lambda r:r["start_at"] or r["anchor_date"])
+        def clock(anchor):
+            return datetime.fromisoformat(anchor["start_at"]).strftime("%H:%M") if anchor["start_at"] else "时间未指定"
+        checks = self.db.rows("SELECT * FROM waiting_items WHERE status='check' AND archived=0") if is_today else []
+        trailing = []
+        if checks:
+            trailing.append(tool_button(f"等待事项 · {len(checks)} 项需要检查", ft.Icons.NOTIFICATION_IMPORTANT_OUTLINED,
+                lambda _:self.show_view(self.NAV_WAITING), color=AMBER))
+        trailing.append(ft.IconButton(ft.Icons.EXPAND_LESS_ROUNDED if is_open else ft.Icons.EXPAND_MORE_ROUNDED,
+            tooltip="收起今日结构" if is_open else "展开今日结构", icon_color=MUTED, icon_size=20,
+            on_click=lambda _:self.toggle_today_structure()))
+        title = "今日结构" if is_today else "当日结构"
+        if not is_open:
+            parts = []
+            upcoming = next((a for a in anchors if a["status"]=="active"), None)
+            if upcoming:
+                parts.append(f"{clock(upcoming)} {upcoming['title']}")
+            others = len(anchors) - (1 if upcoming else 0)
+            if others:
+                parts.append(f"另有 {others} 个外部锚点")
+            if facts["activities"]:
+                parts.append(f"自主活动 {len(facts['activities'])}")
+            if facts["recoveries"]:
+                parts.append(f"恢复 {len(facts['recoveries'])}")
+            summary = " · ".join(parts) or ("今天没有必须在固定时间处理的外部安排" if is_today else "这一天没有外部安排记录")
+            return surface(panel_header(title, summary, icon=ft.Icons.VIEW_TIMELINE_OUTLINED, trailing=trailing),
+                           padding=ft.Padding.symmetric(horizontal=16, vertical=10), radius=16,
+                           on_click=lambda _:self.toggle_today_structure(), ink=True)
         rows = []
-        for anchor in sorted(facts["anchors"], key=lambda r:r["start_at"] or r["anchor_date"]):
-            stamp = datetime.fromisoformat(anchor["start_at"]).strftime("%H:%M") if anchor["start_at"] else "时间未指定"
+        for anchor in anchors:
             deadline = anchor["kind"]=="deadline"
             state = {"active":None, "ended":"已结束", "cancelled":"已取消"}[anchor["status"]]
             rows.append(fact_row(ft.Icons.FLAG_ROUNDED if deadline else ft.Icons.EVENT_ROUNDED, anchor["title"],
-                meta=f"{stamp} · {'截止' if deadline else '事件'} · 来源：{anchor['source']}",
+                meta=f"{clock(anchor)} · {'截止' if deadline else '事件'} · 来源：{anchor['source']}",
                 color=RED if deadline else BLUE, bgcolor=RED_SOFT if deadline else BLUE_SOFT,
                 badge=tag(state) if state else None,
                 on_click=lambda _,aid=anchor["id"]: self.open_anchor(aid)))
@@ -245,23 +338,15 @@ class StructureUI:
         if not rows:
             rows.append(ft.Container(text("今天没有必须在固定时间处理的外部安排。" if is_today else "这一天没有外部安排记录。",small=True),
                                      padding=ft.Padding.symmetric(horizontal=10, vertical=4)))
-        trailing = []
-        if is_today:
-            checks = self.db.rows("SELECT * FROM waiting_items WHERE status='check' AND archived=0")
-            trailing.append(tool_button(f"等待事项 · {len(checks)} 项需要检查" if checks else "等待事项 · 当前没有需要检查的新信息",
-                ft.Icons.NOTIFICATION_IMPORTANT_OUTLINED if checks else ft.Icons.HOURGLASS_EMPTY_ROUNDED,
-                lambda _:self.show_view(self.NAV_WAITING), color=AMBER if checks else MUTED))
         record = []
         if is_today:
             record += [tool_button("添加外部锚点", ft.Icons.ADD_ROUNDED, lambda _:self.open_anchor(), color=BLUE),
                        tool_button("选择自主活动", ft.Icons.ADD_ROUNDED, lambda _:self.open_activity(), color=BLUE)]
         record.append(tool_button("自愿记录状态", ft.Icons.EDIT_NOTE_ROUNDED, lambda _:self.open_assessment(day), color=BLUE))
-        header = panel_header("今日结构" if is_today else "当日结构", "外部安排、自主活动和恢复，只记录真实发生的事",
+        header = panel_header(title, "外部安排、自主活动和恢复，只记录真实发生的事",
                               icon=ft.Icons.VIEW_TIMELINE_OUTLINED, trailing=trailing)
         return card([header, ft.Column(rows, spacing=2), ft.Divider(height=1, color=LINE),
-            ft.Row([ft.Row(record, spacing=2, tight=True, wrap=True), self._structure_actions()],
-                   alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True, run_spacing=6,
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER)])
+                     ft.Row(record, spacing=2, wrap=True)])
 
     def open_anchor(self, anchor_id=None, *, default_task_id=None):
         row = self.db.row("SELECT * FROM external_anchors WHERE id=?",(anchor_id,)) if anchor_id else None
@@ -270,10 +355,10 @@ class StructureUI:
         title = field("事件名称",value("title"))
         source = field("真实外部来源",value("source"))
         kind = select("约束类型",[("event","事件发生"),("deadline","真实截止")],value("kind","event"))
-        day = field("日期 YYYY-MM-DD",value("anchor_date",self.db.today_iso()))
-        start = field("开始 / 截止 HH:MM（可选）",datetime.fromisoformat(row["start_at"]).strftime("%H:%M") if row and row["start_at"] else "")
-        end_day = field("结束日期（可选）",datetime.fromisoformat(row["end_at"]).date().isoformat() if row and row["end_at"] else "")
-        end = field("结束 HH:MM（事件可选）",datetime.fromisoformat(row["end_at"]).strftime("%H:%M") if row and row["end_at"] else "")
+        day = self._date_field("日期",value("anchor_date",self.db.today_iso()))
+        start = self._time_field("开始 / 截止时间（可选）",datetime.fromisoformat(row["start_at"]).strftime("%H:%M") if row and row["start_at"] else "")
+        end_day = self._date_field("结束日期（可选）",datetime.fromisoformat(row["end_at"]).date().isoformat() if row and row["end_at"] else "")
+        end = self._time_field("结束时间（事件可选）",datetime.fromisoformat(row["end_at"]).strftime("%H:%M") if row and row["end_at"] else "")
         consequence = field("未处理的实际后果（可选）",value("consequence"),multiline=True)
         task = self._task_selector(value("task_id",default_task_id))
         status = select("状态",[("active","有效"),("ended","已结束"),("cancelled","已取消")],value("status","active"))
@@ -308,8 +393,8 @@ class StructureUI:
     def open_activity(self, activity_id=None):
         row = self.db.row("SELECT * FROM autonomous_activities WHERE id=?",(activity_id,)) if activity_id else None
         title = field("自主选择的活动",row["title"] if row else "")
-        day = field("日期 YYYY-MM-DD",row["activity_date"] if row else self.db.today_iso())
-        clock = field("安排时间 HH:MM（可选）",row["scheduled_time"] if row else "")
+        day = self._date_field("日期",row["activity_date"] if row else self.db.today_iso())
+        clock = self._time_field("安排时间（可选）",row["scheduled_time"] if row else "")
         task = self._task_selector(row["task_id"] if row else None)
         def save(_):
             self.db.save_activity(title.value,day.value,clock.value,self._reference(task),activity_id)
@@ -481,7 +566,7 @@ class StructureUI:
                     *fit_actions([ft.FilledButton("创建等待事项", icon=ft.Icons.ADD_ROUNDED, on_click=lambda _:self.open_waiting())])],
                    spacing=8, tight=True),
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.END)
-        controls = [header, self._structure_actions()]
+        controls = [header]
         for state in ("check","waiting","actionable","resolved"):
             items = [r for r in rows if r["status"]==state]
             if not items:
@@ -539,7 +624,7 @@ class StructureUI:
         facts = field("当前已确认事实",value("facts"),multiline=True)
         has_action = select("当前是否有有效行动",[("0","没有"),("1","有")],str(value("has_action",0)))
         action = field("有效行动（有行动时填写）",value("action"),multiline=True)
-        check = field("下一次合理检查日期 YYYY-MM-DD（可选）",value("check_date"))
+        check = self._date_field("下一次合理检查日期（可选）",value("check_date"))
         state = select("状态",list(WAIT_LABELS.items()),value("status","waiting"))
         task = self._task_selector(value("task_id",None))
         def save(_):

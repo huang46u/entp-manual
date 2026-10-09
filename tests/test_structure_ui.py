@@ -273,6 +273,68 @@ class StructureUiTests(unittest.TestCase):
         self.assertEqual(self.db.row("SELECT content FROM worries")[0],"现实问题")
         self.assertEqual(self.db.list_thoughts(),[])
 
+    def test_rhythm_menu_is_the_single_pacing_entry(self):
+        a = self.app
+        a.inspiration_capture_open = False
+        a.content_switcher.content = a._focus_card(self.db.get_task(self.task))
+        labels = [c.content for c in _walk(a.content_switcher.content) if isinstance(c,ft.TextButton)]
+        self.assertNotIn("进入恢复状态",labels)
+        menu = a._rhythm_menu()
+        items = {i.content:i for i in menu.items if i.content}
+        self.assertEqual(set(items),{"切换为等待","进入恢复状态","担忧收纳","安静一下"})
+        items["切换为等待"].on_click(None)
+        self.assertEqual(self.db.get_setting("activity_mode"),"wait")
+        self.assertIn("重新进入推进",[i.content for i in a._rhythm_menu(compact=True).items])
+
+    def test_date_and_time_fields_accept_picker_values_and_text(self):
+        a = self.app
+        a.open_anchor()
+        day, start = a._structure_fields["day"], a._structure_fields["start"]
+        self.assertIsNotNone(day.suffix_icon)
+        self.assertIsNotNone(start.suffix_icon)
+        opened = []
+        a.page.show_dialog = opened.append
+        with patch.object(ft.TextField,"update",lambda self:None):
+            day.suffix_icon.on_click(None)
+            opened[-1].on_change(SimpleNamespace(control=SimpleNamespace(value=date(2026,3,4))))
+            start.suffix_icon.on_click(None)
+            from datetime import time
+            opened[-1].on_change(SimpleNamespace(control=SimpleNamespace(value=time(7,5))))
+        self.assertEqual((day.value,start.value),("2026-03-04","07:05"))
+        a._structure_fields["title"].value = "评审会"
+        a._structure_fields["source"].value = "组委会"
+        self.click("保存外部锚点")
+        row = self.db.row("SELECT anchor_date,start_at FROM external_anchors")
+        self.assertEqual(row["anchor_date"],"2026-03-04")
+        self.assertIn("T07:05",row["start_at"])
+
+    def test_today_structure_collapses_to_summary(self):
+        a = self.app
+        today = self.db.today_iso()
+        self.db.save_anchor(title="组会",source="导师",kind="event",anchor_date=today)
+        collapsed = a._today_structure(today)
+        texts = [str(c.value) for c in _walk(collapsed) if isinstance(c,ft.Text)]
+        self.assertTrue(any("组会" in t for t in texts))
+        self.assertFalse(any(isinstance(c,ft.TextButton) and c.content=="添加外部锚点" for c in _walk(collapsed)))
+        a.toggle_today_structure()
+        expanded = a._today_structure(today)
+        self.assertTrue(any(isinstance(c,ft.TextButton) and c.content=="添加外部锚点" for c in _walk(expanded)))
+
+    def test_side_nav_keeps_selected_index_contract(self):
+        from flet_app import SideNav
+        chosen = []
+        nav = SideNav(sections=[("执行",[(0,"当前主线",ft.Icons.FLAG_OUTLINED,ft.Icons.FLAG_ROUNDED),
+                                        (1,"今日清单",ft.Icons.CHECKLIST_ROUNDED,ft.Icons.FACT_CHECK_ROUNDED)])],
+                      on_select=chosen.append,rhythm=ft.Container(),footer=[])
+        nav.selected_index = 1
+        item, icon, label = nav._items[1][:3]
+        self.assertEqual((nav.selected_index,icon.icon),(1,ft.Icons.FACT_CHECK_ROUNDED))
+        item.on_click(None)
+        self.assertEqual(chosen,[1])
+        nav.set_compact(True)
+        self.assertFalse(label.visible)
+        self.assertEqual(item.tooltip,"今日清单")
+
 
 if __name__=="__main__":
     unittest.main()
