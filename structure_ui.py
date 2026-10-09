@@ -11,9 +11,34 @@ import flet as ft
 from life_structure import ASSESS_LABELS, WAIT_LABELS
 
 
-BLUE = "#316BEE"
-INK = "#171A21"
-MUTED = "#737986"
+from ui_theme import (
+    AMBER,
+    AMBER_SOFT,
+    BLUE,
+    BLUE_SOFT,
+    FAINT,
+    FORM_WIDTH,
+    GREEN,
+    GREEN_SOFT,
+    INK,
+    LINE,
+    MUTED,
+    PURPLE,
+    PURPLE_SOFT,
+    READING_WIDTH,
+    RED,
+    RED_SOFT,
+    SURFACE,
+    SURFACE_SOFT,
+    constrained,
+    group_label,
+    icon_badge,
+    panel_header,
+    rounded,
+    surface,
+    tag,
+    tool_button,
+)
 
 
 def text(value, *, small=False):
@@ -51,17 +76,35 @@ def editable_controls(root):
         pending.extend(reversed(children))
 
 
-def card(controls):
-    return ft.Card(content=ft.Container(ft.Column(fit_actions(controls), spacing=12,
-                   horizontal_alignment=ft.CrossAxisAlignment.STRETCH), padding=18),
-                   elevation=0, bgcolor="#FFFFFF", shape=ft.RoundedRectangleBorder(radius=13),
-                   variant=ft.CardVariant.OUTLINED)
+def card(controls, *, soft=False):
+    return surface(ft.Column(fit_actions(controls), spacing=12,
+                   horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+                   padding=18 if soft else 20, radius=14 if soft else 18,
+                   bgcolor=SURFACE_SOFT if soft else SURFACE, border_color=None if soft else LINE)
+
+
+def fact_row(icon, title, *, meta="", color=BLUE, bgcolor=BLUE_SOFT, badge=None, on_click=None):
+    """One recorded fact: icon, title, optional meta line and status tag."""
+    texts = [ft.Text(str(title), size=15, weight=ft.FontWeight.W_500, color=INK,
+                     max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)]
+    if meta:
+        texts.append(ft.Text(str(meta), size=12, color=MUTED, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS))
+    controls = [icon_badge(icon, color=color, bgcolor=bgcolor, size=30),
+                ft.Column(texts, spacing=1, tight=True, expand=True)]
+    if badge is not None:
+        controls.append(badge)
+    if on_click is not None:
+        controls.append(ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=18, color=FAINT))
+    return ft.Container(ft.Row(controls, spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=8), border_radius=12,
+                        on_click=on_click, ink=on_click is not None)
 
 
 def field(label, value="", *, multiline=False):
     return ft.TextField(label=label, value=str(value or ""), multiline=multiline,
                         min_lines=2 if multiline else 1, max_lines=6 if multiline else 1,
-                        border_radius=12, width=float("inf"))
+                        border_radius=12, width=float("inf"), border_color=LINE,
+                        focused_border_color=BLUE, text_size=15)
 
 
 def select(label, options, value=None):
@@ -74,7 +117,25 @@ def select(label, options, value=None):
 
     return ft.Dropdown(label=label, value=value, options=[ft.DropdownOption(key=str(k),text=v) for k,v in options],
                        border_radius=12, width=float("inf"), expanded_insets=ft.Padding.all(0),
+                       border_color=LINE, focused_border_color=BLUE,
                        on_size_change=match_menu_width)
+
+
+def expansion(*, title, controls, **kwargs):
+    """Borderless disclosure section that sits quietly inside a panel."""
+    kwargs.setdefault("expanded_cross_axis_alignment", ft.CrossAxisAlignment.STRETCH)
+    return ft.ExpansionTile(title=title, controls=controls, shape=rounded(12), collapsed_shape=rounded(12),
+                            tile_padding=ft.Padding.symmetric(horizontal=8),
+                            controls_padding=ft.Padding.only(left=8, right=8, bottom=8),
+                            collapsed_bgcolor=SURFACE_SOFT, bgcolor=SURFACE_SOFT, **kwargs)
+
+
+WAIT_STYLES = {
+    "check": (ft.Icons.NOTIFICATION_IMPORTANT_OUTLINED, AMBER, AMBER_SOFT),
+    "waiting": (ft.Icons.HOURGLASS_TOP_ROUNDED, BLUE, BLUE_SOFT),
+    "actionable": (ft.Icons.BOLT_ROUNDED, GREEN, GREEN_SOFT),
+    "resolved": (ft.Icons.TASK_ALT_ROUNDED, MUTED, SURFACE_SOFT),
+}
 
 
 class StructureUI:
@@ -90,14 +151,18 @@ class StructureUI:
 
     def _structure_actions(self):
         mode = self.db.get_setting("activity_mode") or "advance"
+        waiting = mode=="wait"
         return ft.Row([
-            text("当前方式：等待" if mode=="wait" else "当前方式：推进",small=True),
-            ft.TextButton("进入恢复状态", on_click=lambda _: self.enter_recovery()),
-            ft.TextButton("担忧收纳", on_click=lambda _: self.open_worries()),
-            ft.TextButton("安静一下", on_click=lambda _: self.enter_quiet_worry()),
-            ft.TextButton("切换为等待" if mode!="wait" else "重新进入推进",
-                          on_click=lambda _: self.set_activity_mode("wait" if mode!="wait" else "advance")),
-        ], wrap=True, spacing=6)
+            tag("当前方式：等待" if waiting else "当前方式：推进",
+                color=AMBER if waiting else GREEN, bgcolor=AMBER_SOFT if waiting else GREEN_SOFT,
+                icon=ft.Icons.HOURGLASS_TOP_ROUNDED if waiting else ft.Icons.PLAY_ARROW_ROUNDED),
+            tool_button("切换为等待" if not waiting else "重新进入推进", ft.Icons.SWAP_HORIZ_ROUNDED,
+                        lambda _: self.set_activity_mode("wait" if not waiting else "advance")),
+            ft.Container(width=1, height=18, bgcolor=LINE, margin=ft.Margin.symmetric(horizontal=4)),
+            tool_button("进入恢复状态", ft.Icons.SPA_OUTLINED, lambda _: self.enter_recovery()),
+            tool_button("担忧收纳", ft.Icons.INBOX_OUTLINED, lambda _: self.open_worries()),
+            tool_button("安静一下", ft.Icons.SELF_IMPROVEMENT_ROUNDED, lambda _: self.enter_quiet_worry()),
+        ], wrap=True, spacing=2, run_spacing=4, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     def set_activity_mode(self, mode):
         if mode not in ("advance","wait"):
@@ -118,18 +183,20 @@ class StructureUI:
         self._structure_route = route
         self._structure_fields = fields or {}
         self._structure_flush = flush
+        header = ft.Row([
+            tool_button("返回", ft.Icons.ARROW_BACK_ROUNDED, lambda _: self._structure_back()),
+            ft.Text(title, size=24, weight=ft.FontWeight.W_700, color=INK),
+        ], spacing=10, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.content_switcher.content = self._structure_shell(ft.Column([
-            ft.Row([ft.TextButton("返回", on_click=lambda _: self._structure_back()),
-                    ft.Text(title,size=23,weight=ft.FontWeight.W_700)],wrap=True),
-            self._structure_actions(), *fit_actions(controls),
-        ], spacing=14,scroll=ft.ScrollMode.AUTO,expand=True,horizontal_alignment=ft.CrossAxisAlignment.STRETCH))
+            header, card(controls),
+            ft.Container(self._structure_actions(), padding=ft.Padding.only(left=6)),
+        ], spacing=16, scroll=ft.ScrollMode.AUTO, expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH))
         self.page.update()
 
-    def _structure_shell(self,content):
-        # Alignment loosens the child's width constraints: narrow windows clamp
-        # naturally, while wide reading/editing panels stop at 1160 pixels.
-        return self._page_shell(ft.Container(ft.Container(content,width=1160),
-            alignment=ft.Alignment.TOP_CENTER,expand=True))
+    def _structure_shell(self, content, width=FORM_WIDTH):
+        # Narrow windows clamp naturally; wide reading/editing panels stop at
+        # a comfortable line length instead of stretching across the monitor.
+        return self._page_shell(constrained(content, width))
 
     def _structure_back(self):
         if self._structure_flush:
@@ -154,30 +221,47 @@ class StructureUI:
 
     def _today_structure(self, day):
         facts = self.db.structure_day(day)
-        controls = [text("今日结构" if day==self.db.today_iso() else "当日结构")]
+        is_today = day==self.db.today_iso()
+        rows = []
         for anchor in sorted(facts["anchors"], key=lambda r:r["start_at"] or r["anchor_date"]):
             stamp = datetime.fromisoformat(anchor["start_at"]).strftime("%H:%M") if anchor["start_at"] else "时间未指定"
-            label = "截止" if anchor["kind"]=="deadline" else "事件"
-            state = {"active":"", "ended":" · 已结束", "cancelled":" · 已取消"}[anchor["status"]]
-            controls.append(ft.TextButton(f"{stamp} · {label} · {anchor['title']}{state}",
+            deadline = anchor["kind"]=="deadline"
+            state = {"active":None, "ended":"已结束", "cancelled":"已取消"}[anchor["status"]]
+            rows.append(fact_row(ft.Icons.FLAG_ROUNDED if deadline else ft.Icons.EVENT_ROUNDED, anchor["title"],
+                meta=f"{stamp} · {'截止' if deadline else '事件'} · 来源：{anchor['source']}",
+                color=RED if deadline else BLUE, bgcolor=RED_SOFT if deadline else BLUE_SOFT,
+                badge=tag(state) if state else None,
                 on_click=lambda _,aid=anchor["id"]: self.open_anchor(aid)))
-        if not facts["anchors"]:
-            controls.append(text("今天没有必须在固定时间处理的外部安排。" if day==self.db.today_iso() else "这一天没有外部安排记录。",small=True))
         for activity in facts["activities"]:
-            controls.append(ft.TextButton(f"自主选择 · {activity['scheduled_time']} {activity['title']}",
+            rows.append(fact_row(ft.Icons.EXPLORE_OUTLINED, activity["title"],
+                meta=f"自主选择 · {activity['scheduled_time'] or '时间自定'}", color=PURPLE, bgcolor=PURPLE_SOFT,
                 on_click=lambda _,aid=activity["id"]: self.open_activity(aid)))
         for recovery in facts["recoveries"]:
-            controls.append(text(f"恢复 · {recovery['activity'] or '未选择活动'} · {'已结束' if recovery['ended_at'] else '进行中'}",small=True))
-        if day==self.db.today_iso():
+            ended = bool(recovery["ended_at"])
+            rows.append(fact_row(ft.Icons.SPA_OUTLINED, recovery["activity"] or "未选择活动", meta="恢复",
+                color=GREEN, bgcolor=GREEN_SOFT,
+                badge=tag("已结束" if ended else "进行中", color=MUTED if ended else GREEN,
+                          bgcolor=SURFACE_SOFT if ended else GREEN_SOFT)))
+        if not rows:
+            rows.append(ft.Container(text("今天没有必须在固定时间处理的外部安排。" if is_today else "这一天没有外部安排记录。",small=True),
+                                     padding=ft.Padding.symmetric(horizontal=10, vertical=4)))
+        trailing = []
+        if is_today:
             checks = self.db.rows("SELECT * FROM waiting_items WHERE status='check' AND archived=0")
-            controls.append(ft.TextButton(f"等待事项 · {len(checks)} 项需要检查" if checks else "等待事项 · 当前没有需要检查的新信息",
-                                          on_click=lambda _:self.show_view(self.NAV_WAITING)))
-            controls.append(ft.Row([
-                ft.TextButton("添加外部锚点", on_click=lambda _:self.open_anchor()),
-                ft.TextButton("选择自主活动", on_click=lambda _:self.open_activity()),
-            ],wrap=True))
-        controls.extend([ft.TextButton("自愿记录状态",on_click=lambda _:self.open_assessment(day)), self._structure_actions()])
-        return card(controls)
+            trailing.append(tool_button(f"等待事项 · {len(checks)} 项需要检查" if checks else "等待事项 · 当前没有需要检查的新信息",
+                ft.Icons.NOTIFICATION_IMPORTANT_OUTLINED if checks else ft.Icons.HOURGLASS_EMPTY_ROUNDED,
+                lambda _:self.show_view(self.NAV_WAITING), color=AMBER if checks else MUTED))
+        record = []
+        if is_today:
+            record += [tool_button("添加外部锚点", ft.Icons.ADD_ROUNDED, lambda _:self.open_anchor(), color=BLUE),
+                       tool_button("选择自主活动", ft.Icons.ADD_ROUNDED, lambda _:self.open_activity(), color=BLUE)]
+        record.append(tool_button("自愿记录状态", ft.Icons.EDIT_NOTE_ROUNDED, lambda _:self.open_assessment(day), color=BLUE))
+        header = panel_header("今日结构" if is_today else "当日结构", "外部安排、自主活动和恢复，只记录真实发生的事",
+                              icon=ft.Icons.VIEW_TIMELINE_OUTLINED, trailing=trailing)
+        return card([header, ft.Column(rows, spacing=2), ft.Divider(height=1, color=LINE),
+            ft.Row([ft.Row(record, spacing=2, tight=True, wrap=True), self._structure_actions()],
+                   alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True, run_spacing=6,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER)])
 
     def open_anchor(self, anchor_id=None, *, default_task_id=None):
         row = self.db.row("SELECT * FROM external_anchors WHERE id=?",(anchor_id,)) if anchor_id else None
@@ -211,7 +295,7 @@ class StructureUI:
             if ended:
                 self._offer_recovery(aid)
         history = self.db.rows("SELECT * FROM structure_events WHERE entity_type='external_anchors' AND entity_id=? ORDER BY id",(str(anchor_id),)) if row else []
-        details = ft.ExpansionTile(title=text("更多信息"),controls=[end_day,end,consequence,task,status,
+        details = expansion(title=text("更多信息"),controls=[end_day,end,consequence,task,status,
             *[text(f"{r['occurred_at']} · {r['event_type']}",small=True) for r in history]])
         self._structure_surface("外部锚点",[text("自主安排请放在自主活动中。外部锚点不会创建或完成任务。",small=True),
             title,source,kind,day,start,details,ft.FilledButton("保存外部锚点",on_click=save)],route=("anchor",anchor_id),fields=fields)
@@ -270,14 +354,14 @@ class StructureUI:
                 self._sync_markdown()
                 self.open_experiment(experiment_id=eid)
             controls.append(card([text(f"第 {draft['round_no']} 轮 · 草稿"),fields["method"],fields["observation"],
-                ft.ExpansionTile(title=text("假设、参数与下一次实验"),controls=[fields[k] for k in ("hypothesis","next_hypothesis","parameters","input_data")]),
-                ft.FilledButton("保存实际观察",on_click=record)]))
+                expansion(title=text("假设、参数与下一次实验"),controls=[fields[k] for k in ("hypothesis","next_hypothesis","parameters","input_data")]),
+                ft.FilledButton("保存实际观察",on_click=record)],soft=True))
         recorded = [r for r in iterations if r["state"]=="recorded"]
         for iteration in iterations:
             if iteration["state"]!="recorded":
                 continue
             evidence = self.db.rows("SELECT * FROM experiment_evidence WHERE iteration_id=? ORDER BY id",(iteration["id"],))
-            controls.append(ft.ExpansionTile(title=text(f"第 {iteration['round_no']} 轮 · {iteration['event_date']}"),
+            controls.append(expansion(title=text(f"第 {iteration['round_no']} 轮 · {iteration['event_date']}"),
                 expanded=bool(recorded and iteration["id"]==recorded[-1]["id"]),
                 expanded_cross_axis_alignment=ft.CrossAxisAlignment.STRETCH,
                 controls=[text(f"方法：{iteration['method']}"),text(f"观察：{iteration['observation']}"),
@@ -313,10 +397,16 @@ class StructureUI:
         self.refresh_current_sections()
 
     def open_task_experiments(self,task_id):
-        controls = [ft.FilledButton("新建实验",on_click=lambda _:self._new_task_experiment(task_id))]
-        for row in self.db.rows("SELECT * FROM experiments WHERE task_id=? ORDER BY id DESC",(task_id,)):
-            controls.append(ft.TextButton(f"{row['question']} · { {'active':'进行中','paused':'暂停','ended':'已结束'}[row['status']]}",
+        controls = [ft.Row([ft.FilledButton("新建实验",icon=ft.Icons.ADD_ROUNDED,on_click=lambda _:self._new_task_experiment(task_id))])]
+        styles = {"active":("进行中",GREEN,GREEN_SOFT),"paused":("暂停",AMBER,AMBER_SOFT),"ended":("已结束",MUTED,SURFACE_SOFT)}
+        rows = self.db.rows("SELECT * FROM experiments WHERE task_id=? ORDER BY id DESC",(task_id,))
+        for row in rows:
+            label,color,soft = styles[row["status"]]
+            controls.append(fact_row(ft.Icons.SCIENCE_OUTLINED,row["question"],color=color,bgcolor=soft,
+                badge=tag(label,color=color,bgcolor=soft),
                 on_click=lambda _,eid=row["id"]:self.open_experiment(experiment_id=eid)))
+        if not rows:
+            controls.append(text("这个任务还没有实验记录。",small=True))
         self._structure_surface("任务实验历史",controls,route=("task_experiments",task_id))
 
     def _new_task_experiment(self,task_id):
@@ -381,25 +471,55 @@ class StructureUI:
         self.db.refresh_waiting_checks()
         archived = getattr(self,"_show_waiting_archive",False)
         rows = self.db.rows("SELECT * FROM waiting_items WHERE archived=? ORDER BY updated_at DESC,id DESC",(int(archived),))
-        controls = [ft.Text("等待事项",size=27,weight=ft.FontWeight.W_700),self._structure_actions(),
-            ft.Row([ft.FilledButton("创建等待事项",on_click=lambda _:self.open_waiting()),
-                ft.TextButton("返回当前事项" if archived else "查看归档",on_click=lambda _:self._toggle_waiting_archive())],wrap=True)]
+        header = ft.Row([
+            ft.Column([ft.Text("等待事项 · 归档" if archived else "等待事项", size=27, weight=ft.FontWeight.W_700, color=INK),
+                       ft.Text("写清在等谁、已确认的事实和下一次检查日期；到期时会标为「需要检查」。", size=15, color=MUTED)],
+                      spacing=5, expand=True),
+            ft.Row([tool_button("返回当前事项" if archived else "查看归档",
+                                ft.Icons.ARROW_BACK_ROUNDED if archived else ft.Icons.INVENTORY_2_OUTLINED,
+                                lambda _:self._toggle_waiting_archive()),
+                    *fit_actions([ft.FilledButton("创建等待事项", icon=ft.Icons.ADD_ROUNDED, on_click=lambda _:self.open_waiting())])],
+                   spacing=8, tight=True),
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.END)
+        controls = [header, self._structure_actions()]
         for state in ("check","waiting","actionable","resolved"):
             items = [r for r in rows if r["status"]==state]
             if not items:
                 continue
+            icon, color, soft = WAIT_STYLES[state]
             cards = []
             for r in items:
-                cards.append(card([text(r["title"]),text(f"等待：{r['waiting_for']} · 检查日期：{r['check_date'] or '未安排'}",small=True),
-                    text(r["action"] if r["has_action"] else "当前没有新的可处理信息。",small=True),
-                    ft.Row([ft.TextButton("查看 / 编辑",on_click=lambda _,rid=r["id"]:self.open_waiting(rid)),
-                        ft.TextButton("恢复" if archived else "归档",on_click=lambda _,rid=r["id"]:self._archive_waiting_ui(rid,not archived))],wrap=True)]))
-            controls.append(ft.ExpansionTile(title=text(f"{WAIT_LABELS[state]} · {len(items)} 项"),controls=cards,
-                                             expanded=state!="resolved"))
+                summary = r["action"] if r["has_action"] else "当前没有新的可处理信息。"
+                cards.append(surface(ft.Row([
+                    icon_badge(icon, color=color, bgcolor=soft, size=36),
+                    ft.Column([ft.Text(r["title"], size=16, weight=ft.FontWeight.W_600, color=INK),
+                               text(f"等待：{r['waiting_for'] or '未填写'} · 检查日期：{r['check_date'] or '未安排'}", small=True),
+                               ft.Text(summary, size=14, color=INK if r["has_action"] else MUTED, max_lines=2,
+                                       overflow=ft.TextOverflow.ELLIPSIS)], spacing=3, expand=True),
+                    ft.Row([tool_button("查看 / 编辑", ft.Icons.EDIT_OUTLINED, lambda _,rid=r["id"]:self.open_waiting(rid), color=BLUE),
+                            tool_button("恢复" if archived else "归档",
+                                        ft.Icons.UNARCHIVE_OUTLINED if archived else ft.Icons.ARCHIVE_OUTLINED,
+                                        lambda _,rid=r["id"]:self._archive_waiting_ui(rid,not archived), color=MUTED)],
+                           spacing=0, tight=True),
+                ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=ft.Padding.symmetric(horizontal=18, vertical=14), radius=16))
+            controls.append(ft.Container(ft.Row([ft.Icon(icon, size=18, color=color),
+                ft.Text(WAIT_LABELS[state], size=17, weight=ft.FontWeight.W_700, color=INK),
+                ft.Text(str(len(items)), size=14, color=FAINT)], spacing=8), padding=ft.Padding.only(top=8)))
+            if state=="resolved":
+                controls.append(expansion(title=text(f"{WAIT_LABELS[state]} · {len(items)} 项", small=True),
+                                          controls=[ft.Column(cards, spacing=8)], expanded=False))
+            else:
+                controls.extend(cards)
         if not rows:
-            controls.append(text("这里还没有等待事项。无需为了填满页面而创建。",small=True))
-        return self._structure_shell(ft.Column(controls,spacing=14,scroll=ft.ScrollMode.AUTO,expand=True,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH))
+            controls.append(surface(ft.Column([
+                ft.Icon(ft.Icons.HOURGLASS_EMPTY_ROUNDED, size=40, color="#C2C6CE"),
+                ft.Text("归档里没有等待事项" if archived else "现在没有在等的事", size=18, weight=ft.FontWeight.W_700, color=INK),
+                text("这里还没有等待事项。无需为了填满页面而创建。", small=True),
+            ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=48, horizontal=20), alignment=ft.Alignment.CENTER))
+        return self._structure_shell(ft.Column(controls,spacing=12,scroll=ft.ScrollMode.AUTO,expand=True,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH), READING_WIDTH)
 
     def _toggle_waiting_archive(self):
         self._show_waiting_archive = not getattr(self,"_show_waiting_archive",False)
@@ -429,7 +549,7 @@ class StructureUI:
             self._structure_saved()
         history = self.db.rows("SELECT * FROM structure_events WHERE entity_type='waiting_items' AND entity_id=? ORDER BY id",(str(item_id),)) if row else []
         controls = [title,who,facts,state,has_action,action,check,
-            ft.ExpansionTile(title=text("关联任务与更新记录"),controls=[task,*[text(
+            expansion(title=text("关联任务与更新记录"),controls=[task,*[text(
                 f"{h['occurred_at']} · {WAIT_LABELS.get(json.loads(h['after_json'])['status'],'')} · {json.loads(h['after_json'])['facts']}",small=True) for h in history]]),
             ft.FilledButton("保存等待事项",on_click=save)]
         self._structure_surface("等待事项",controls,route=("waiting",item_id),
@@ -441,7 +561,7 @@ class StructureUI:
                     text("这里保存现实问题；灵感继续留在候审区。",small=True)]
         for row in rows:
             controls.append(card([text(row["content"]),text("已归档" if row["archived"] else {"yes":"有可执行行动","no":"目前没有行动","uncertain":"暂时不确定"}[row["actionability"]],small=True),
-                ft.TextButton("重新查看 / 编辑",on_click=lambda _,wid=row["id"]:self.open_worry(wid))]))
+                tool_button("重新查看 / 编辑",ft.Icons.EDIT_OUTLINED,lambda _,wid=row["id"]:self.open_worry(wid),color=BLUE)],soft=True))
         self._structure_surface("担忧收纳",controls,route=("worries",None))
 
     def open_worry(self, worry_id=None):
@@ -464,7 +584,7 @@ class StructureUI:
             self.db.save_worry(content.value,decision.value,task_id,self._reference(waiting),self._reference(thought),archived,worry_id)
             self._sync_markdown()
             self.open_worries()
-        controls = [content,decision,ft.ExpansionTile(title=text("关联已有记录或创建行动"),controls=[task,waiting,thought,new_action]),
+        controls = [content,decision,expansion(title=text("关联已有记录或创建行动"),controls=[task,waiting,thought,new_action]),
             ft.Row([ft.FilledButton("保存",on_click=lambda _:save(bool(row["archived"]) if row else False)),
                 ft.TextButton("恢复" if row and row["archived"] else "归档",on_click=lambda _:save(not bool(row["archived"]) if row else True)),
                 *([ft.TextButton("删除",on_click=lambda _:self._delete_worry_ui(worry_id))] if row else [])],wrap=True)]
@@ -491,9 +611,8 @@ class StructureUI:
 
     def _structure_review_panel(self):
         days = self.db.structure_review()
-        controls = [text("最近 14 天 · 结构观察"),text("只展示已记录事实；空白日期保持为空。",small=True)]
         count = sum(bool(d["assessment"] and any(d["assessment"][k] is not None for k in ASSESS_LABELS)) for d in days)
-        controls.append(text(f"主动填写状态：{count} / 14 天",small=True))
+        tiles = []
         for d in days:
             parts = []
             for key,label in (("anchors","外部锚点"),("activities","自主选择"),("iterations","实验观察"),("waiting_events","等待变化"),("recoveries","恢复")):
@@ -501,33 +620,58 @@ class StructureUI:
                     parts.append(f"{label} {len(d[key])}")
             if d["assessment"] and d["assessment"]["pressure"] is not None:
                 parts.append("自评压力 "+d["assessment"]["pressure"])
-            controls.append(ft.TextButton(f"{d['day']} · {' · '.join(parts) or '未记录结构信息'}",
+            day = date.fromisoformat(d["day"])
+            recorded = bool(parts)
+            tiles.append(ft.Container(ft.Column([
+                ft.Row([ft.Text(f"{day.month}/{day.day}", size=14, weight=ft.FontWeight.W_700, color=INK if recorded else MUTED),
+                        ft.Text("周"+"一二三四五六日"[day.weekday()], size=12, color=FAINT)], spacing=6),
+                ft.Text(" · ".join(parts) if recorded else "未记录", size=12,
+                        color=BLUE if recorded else FAINT, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+            ], spacing=4, tight=True), padding=ft.Padding.symmetric(horizontal=12, vertical=10), border_radius=12,
+                bgcolor=BLUE_SOFT if recorded else SURFACE_SOFT, ink=True,
+                tooltip=f"{d['day']} · {' · '.join(parts) or '未记录结构信息'}",
+                col={ft.ResponsiveRowBreakpoint.XS: 7, ft.ResponsiveRowBreakpoint.MD: 2},
                 on_click=lambda _,day=d["day"]:self.open_structure_day(day)))
-        controls.append(ft.TextButton("所选日期的结构与状态",on_click=lambda _:self.open_structure_day(self.calendar_selected_day.isoformat())))
-        return card(controls)
+        header = panel_header("最近 14 天 · 结构观察", f"只展示已记录事实，空白日期保持为空 · 主动填写状态 {count} / 14 天",
+                              icon=ft.Icons.INSIGHTS_ROUNDED, color=PURPLE, bgcolor=PURPLE_SOFT,
+                              trailing=[tool_button("所选日期的结构与状态", ft.Icons.OPEN_IN_NEW_ROUNDED,
+                                  lambda _:self.open_structure_day(self.calendar_selected_day.isoformat()), color=BLUE)])
+        return card([header, ft.ResponsiveRow(tiles, columns=14, spacing=8, run_spacing=8)])
 
     def open_structure_day(self,day):
         d = self.db.structure_day(day)
         controls = []
         for r in self.db.list_daily_entries(day):
-            controls.append(text(f"任务 · {r['task_title_snapshot']} · {r['state']}"))
+            done = r["state"]=="completed"
+            controls.append(fact_row(ft.Icons.TASK_ALT_ROUNDED if done else ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED,
+                r["task_title_snapshot"],meta=f"任务 · {r['state']}",color=GREEN if done else MUTED,
+                bgcolor=GREEN_SOFT if done else SURFACE_SOFT))
         for r in d["anchors"]:
-            controls.append(text(f"外部锚点 · {r['title']} · 来源：{r['source']} · {r['status']}"))
+            controls.append(fact_row(ft.Icons.EVENT_ROUNDED,r["title"],meta=f"外部锚点 · 来源：{r['source']} · {r['status']}"))
         for r in d["activities"]:
-            controls.append(text(f"自主活动 · {r['title']}"))
+            controls.append(fact_row(ft.Icons.EXPLORE_OUTLINED,r["title"],meta="自主活动",color=PURPLE,bgcolor=PURPLE_SOFT))
         for r in d["iterations"]:
-            controls.append(ft.TextButton(f"实验第 {r['round_no']} 轮 · {r['observation']}",
+            controls.append(fact_row(ft.Icons.SCIENCE_OUTLINED,f"实验第 {r['round_no']} 轮 · {r['observation']}",
+                meta="实验观察",color=GREEN,bgcolor=GREEN_SOFT,
                 on_click=lambda _,eid=r["experiment_id"]:self.open_experiment(experiment_id=eid)))
         for r in d["waiting_events"]:
             after = json.loads(r["after_json"])
-            controls.append(text(f"等待变化 · {after['title']} · {WAIT_LABELS[after['status']]} · {after['facts']}"))
+            controls.append(fact_row(ft.Icons.HOURGLASS_TOP_ROUNDED,after["title"],
+                meta=f"等待变化 · {WAIT_LABELS[after['status']]} · {after['facts']}",color=AMBER,bgcolor=AMBER_SOFT))
         for r in d["recoveries"]:
-            controls.append(text(f"恢复 · {r['activity'] or '未选择活动'} · {r['started_at']} → {r['ended_at'] or '尚未结束'}"))
+            controls.append(fact_row(ft.Icons.SPA_OUTLINED,r["activity"] or "未选择活动",
+                meta=f"恢复 · {r['started_at']} → {r['ended_at'] or '尚未结束'}",color=GREEN,bgcolor=GREEN_SOFT))
+        if not controls:
+            controls.append(text("这一天没有记录。",small=True))
+        assessment = []
         for key,label in ASSESS_LABELS.items():
             value = d["assessment"][key] if d["assessment"] else None
-            controls.append(text(f"{label}：{'未记录' if value is None else value if key=='pressure' else '是' if value else '否'}",small=True))
-        controls.append(ft.Row([ft.TextButton("查看当日账本",on_click=lambda _:self.open_daily_ledger(date.fromisoformat(day))),
-            ft.TextButton("编辑自愿记录",on_click=lambda _:self.open_assessment(day))],wrap=True))
+            shown = "未记录" if value is None else value if key=="pressure" else "是" if value else "否"
+            assessment.append(tag(f"{label}：{shown}",color=MUTED if value is None else BLUE,
+                                  bgcolor=SURFACE_SOFT if value is None else BLUE_SOFT))
+        controls += [ft.Divider(height=1,color=LINE),group_label("自愿状态记录"),ft.Row(assessment,wrap=True,spacing=6,run_spacing=6),
+            ft.Row([tool_button("查看当日账本",ft.Icons.MENU_BOOK_OUTLINED,lambda _:self.open_daily_ledger(date.fromisoformat(day)),color=BLUE),
+                tool_button("编辑自愿记录",ft.Icons.EDIT_NOTE_ROUNDED,lambda _:self.open_assessment(day),color=BLUE)],wrap=True)]
         self._structure_surface(f"{day} · 结构与状态",controls,route=("structure_day",day))
 
     def _capture_work_context(self):
@@ -623,12 +767,14 @@ class StructureUI:
                     self.db.update_recovery(self._quiet_session_id,value)
                 self.page.update()
             activity.on_change = lambda _:self.db.update_recovery(self._quiet_session_id,activity.value) if self._quiet_session_id else None
-            controls = [ft.Text("暂时恢复",size=27),text("可以走一走、听音乐，或安静休息。时间由你决定。"),
+            controls = [ft.Row([icon_badge(ft.Icons.SPA_OUTLINED,color=GREEN,bgcolor=GREEN_SOFT,size=48)]),
+                ft.Text("暂时恢复",size=27,weight=ft.FontWeight.W_700,color=INK),text("可以走一走、听音乐，或安静休息。时间由你决定。"),
                 text("如果愿意，可以给自己 30–60 分钟；这里没有倒计时。",small=True),activity,
-                ft.Row([ft.TextButton(label,on_click=lambda _,s=label:choose(s)) for label in
-                    ("出去走一走","听音乐","安静休息","轻松阅读","无需产出的个人兴趣")],wrap=True),
-                ft.TextButton("跳过恢复记录",on_click=lambda _:self._skip_recovery()),
-                ft.FilledButton("退出恢复状态",on_click=lambda _:self.exit_quiet())]
+                ft.Row([ft.OutlinedButton(label,on_click=lambda _,s=label:choose(s),
+                    style=ft.ButtonStyle(shape=rounded(99),side=ft.BorderSide(1,LINE),color=INK)) for label in
+                    ("出去走一走","听音乐","安静休息","轻松阅读","无需产出的个人兴趣")],wrap=True,spacing=8,run_spacing=8),
+                ft.Row([ft.FilledButton("退出恢复状态",on_click=lambda _:self.exit_quiet()),
+                    ft.TextButton("跳过恢复记录",on_click=lambda _:self._skip_recovery())],wrap=True)]
         else:
             worry = field("现在有什么事情一直占着你的注意力？",multiline=True)
             decision = select("这件事现在有可执行的行动吗？",[("yes","有"),("no","没有"),("uncertain","暂时不确定")],"uncertain")
@@ -638,12 +784,16 @@ class StructureUI:
                 self.db.save_worry(worry.value,decision.value)
                 worry.value = ""
                 self.page.update()
-            controls = [ft.Text("先安静一下",size=27),text("可以先喝点水、离开屏幕，或找信任的人说说眼前的事情。"),
-                worry,decision,ft.FilledButton("把原文留下",on_click=save),ft.TextButton("返回原来的页面",on_click=lambda _:self.exit_quiet())]
+            controls = [ft.Row([icon_badge(ft.Icons.SELF_IMPROVEMENT_ROUNDED,color=PURPLE,bgcolor=PURPLE_SOFT,size=48)]),
+                ft.Text("先安静一下",size=27,weight=ft.FontWeight.W_700,color=INK),text("可以先喝点水、离开屏幕，或找信任的人说说眼前的事情。"),
+                worry,decision,ft.Row([ft.FilledButton("把原文留下",on_click=save),
+                    ft.TextButton("返回原来的页面",on_click=lambda _:self.exit_quiet())],wrap=True)]
         self._quiet_feedback = text("",small=True)
-        self._quiet_control = ft.Container(ft.Column([*fit_actions(controls),self._quiet_feedback],spacing=18,scroll=ft.ScrollMode.AUTO,
+        panel = surface(ft.Column([*fit_actions(controls),self._quiet_feedback],spacing=16,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH),padding=36,radius=24)
+        self._quiet_control = ft.Container(ft.Column([ft.Container(ft.Container(panel,width=640),alignment=ft.Alignment.TOP_CENTER)],scroll=ft.ScrollMode.AUTO,
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-            padding=28,bgcolor="#F7F8FB",expand=True,width=float("inf"))
+            padding=ft.Padding.symmetric(horizontal=28,vertical=72),bgcolor=SURFACE_SOFT,expand=True,width=float("inf"))
         self.page.controls.append(self._quiet_control)
         self.page.update()
 

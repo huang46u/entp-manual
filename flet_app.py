@@ -41,6 +41,30 @@ from app_version import APP_VERSION, INTERNAL_DEMO_BUILD
 from database import Database
 from markdown_store import MarkdownStore
 from structure_ui import StructureUI
+from ui_theme import (
+    AMBER,
+    AMBER_SOFT,
+    BLUE,
+    BLUE_DARK,
+    BLUE_SOFT,
+    CANVAS,
+    FAINT,
+    GREEN,
+    GREEN_SOFT,
+    INK,
+    LINE,
+    MUTED,
+    READING_WIDTH,
+    RED,
+    SIDEBAR,
+    SURFACE,
+    WIDE_WIDTH,
+    constrained,
+    group_label,
+    rounded,
+    tag,
+    tool_button,
+)
 from update_service import (
     ReleaseInfo,
     UpdateError,
@@ -81,21 +105,6 @@ else:
     RESOURCE_ROOT = SOURCE_ROOT
 DEFAULT_DB = ROOT / "entp_manual.db"
 RUNTIME_ERROR_LOG = ROOT / "logs" / "runtime-errors.log"
-
-BLUE = "#316BEE"
-BLUE_DARK = "#2457CC"
-BLUE_SOFT = "#EEF3FF"
-INK = "#171A21"
-MUTED = "#737986"
-LINE = "#E7E9EE"
-SURFACE = "#FFFFFF"
-SIDEBAR = "#F7F8FB"
-CANVAS = "#FBFCFE"
-GREEN = "#37A46A"
-GREEN_SOFT = "#EAF7EF"
-AMBER = "#B87818"
-AMBER_SOFT = "#FFF6DF"
-RED = "#E45959"
 
 
 def native_quill_available() -> bool:
@@ -174,10 +183,6 @@ def configure_markdown_editor_errors(
     if isinstance(editor, FletQuillEditor):
         editor.on_paste_error = on_paste_error
         editor.on_render_error = on_render_error
-
-
-def rounded(radius: int = 18) -> ft.RoundedRectangleBorder:
-    return ft.RoundedRectangleBorder(radius=radius)
 
 
 def pill(text: str, *, color: str = BLUE, bgcolor: str = BLUE_SOFT, icon=None) -> ft.Container:
@@ -1427,13 +1432,16 @@ class EntpFletApp(StructureUI):
             [left, right], spacing=14, run_spacing=18
         )
         return self._page_shell(
-            ft.Column(
-                [
-                    self.current_header,
-                    task_calendar_layout,
-                ],
-                spacing=20,
-                scroll=ft.ScrollMode.AUTO,
+            constrained(
+                ft.Column(
+                    [
+                        self.current_header,
+                        task_calendar_layout,
+                    ],
+                    spacing=20,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                WIDE_WIDTH,
             )
         )
 
@@ -1589,13 +1597,34 @@ class EntpFletApp(StructureUI):
                     ft.TextButton("展开其他可执行操作", on_click=lambda _: self._expand_waiting_focus(task_id)),
                 ], wrap=True),
             ], spacing=12)
-        body.controls.append(ft.Row([
-            *([ft.TextButton("进入实验模式", on_click=lambda _: self.open_experiment(task_id=int(focus["id"]))),
-               ft.TextButton("实验历史", on_click=lambda _: self.open_task_experiments(int(focus["id"])))] if focus else []),
-            ft.TextButton("添加外部锚点", on_click=lambda _: self.open_anchor(
-                default_task_id=int(focus["id"]) if focus else None)),
-        ], wrap=True))
-        body.controls.append(self._structure_actions())
+        # Secondary tools live in one quiet strip under the primary actions:
+        # experiments/anchors on the left, pacing and recovery on the right.
+        record_tools: list[ft.Control] = []
+        if focus:
+            record_tools += [
+                tool_button("进入实验模式", ft.Icons.SCIENCE_OUTLINED,
+                            lambda _: self.open_experiment(task_id=int(focus["id"]))),
+                tool_button("实验历史", ft.Icons.HISTORY_ROUNDED,
+                            lambda _: self.open_task_experiments(int(focus["id"]))),
+            ]
+        record_tools.append(
+            tool_button("添加外部锚点", ft.Icons.EVENT_OUTLINED, lambda _: self.open_anchor(
+                default_task_id=int(focus["id"]) if focus else None))
+        )
+        body.controls.append(ft.Divider(height=1, color=LINE))
+        body.controls.append(
+            ft.Row(
+                [
+                    ft.Row([group_label("记录"), *record_tools], spacing=2, tight=True, wrap=True,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    self._structure_actions(),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=True,
+                run_spacing=6,
+            )
+        )
         return ft.Card(
             content=ft.Container(body, padding=20),
             elevation=0,
@@ -1787,14 +1816,15 @@ class EntpFletApp(StructureUI):
                     ft.IconButton(
                         ft.Icons.DELETE_OUTLINE_ROUNDED,
                         tooltip="删除任务",
-                        icon_color=MUTED,
+                        icon_color=FAINT,
+                        icon_size=19,
                         on_click=lambda _, tid=task_id: self.request_delete_task(tid),
                     ),
                 ],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            height=60,
+            height=48,
             padding=ft.Padding.only(left=4, right=14),
             bgcolor=SURFACE,
             on_click=lambda _, tid=task_id: self.select_task(tid),
@@ -1802,7 +1832,7 @@ class EntpFletApp(StructureUI):
         return ft.Container(
             content=self._task_draggable(task_id, title, row),
             margin=ft.Margin.only(left=48, right=8),
-            height=60,
+            height=48,
         )
 
     def _task_row(self, task, *, completed: bool, subtasks) -> ft.Control:
@@ -1810,6 +1840,8 @@ class EntpFletApp(StructureUI):
         selected = task_id == self.selected_task_id
         title = str(task["title"])
         can_expand = bool(subtasks) or self.subtask_input_parent_id == task_id
+        focused = bool(task["is_focus"]) and not completed
+        done_subtasks = sum(str(item["status"]) == "完成" for item in subtasks)
         tile = ft.Container(
             content=ft.Row(
                 [
@@ -1846,17 +1878,22 @@ class EntpFletApp(StructureUI):
                         overflow=ft.TextOverflow.ELLIPSIS,
                         expand=True,
                     ),
+                    *([tag("当前", color=GREEN, bgcolor=GREEN_SOFT, icon=ft.Icons.PLAY_ARROW_ROUNDED)]
+                      if focused else []),
+                    *([tag(f"{done_subtasks}/{len(subtasks)}", color=BLUE, bgcolor=BLUE_SOFT)]
+                      if subtasks else []),
                     ft.IconButton(
                         ft.Icons.DELETE_OUTLINE_ROUNDED,
                         tooltip="删除任务",
-                        icon_color=MUTED,
+                        icon_color=FAINT,
+                        icon_size=20,
                         on_click=lambda _, tid=task_id: self.request_delete_task(tid),
                     ),
                 ],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            height=64,
+            height=54,
             padding=ft.Padding.only(left=4, right=14),
             bgcolor="#F7F8FA" if selected else SURFACE,
             border_radius=10,
@@ -1877,10 +1914,10 @@ class EntpFletApp(StructureUI):
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             ),
             bgcolor=SURFACE,
-            border=ft.Border.all(1, LINE),
+            border=ft.Border.all(1, "#BFE3CC" if focused else LINE),
             border_radius=14,
-            padding=ft.Padding.symmetric(horizontal=6, vertical=4),
-            margin=ft.Margin.only(bottom=8),
+            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+            margin=ft.Margin.only(bottom=6),
         )
 
     def _task_detail_dialog(self, task) -> ft.AlertDialog:
@@ -4067,13 +4104,7 @@ class EntpFletApp(StructureUI):
             ),
             expand=True,
         )
-        return self._page_shell(
-            ft.Row(
-                [body],
-                alignment=ft.MainAxisAlignment.CENTER,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-            )
-        )
+        return self._page_shell(constrained(body, READING_WIDTH))
 
     def _daily_group(
         self,
@@ -4243,7 +4274,8 @@ class EntpFletApp(StructureUI):
                         ft.IconButton(
                             ft.Icons.DELETE_OUTLINE_ROUNDED,
                             tooltip="删除任务",
-                            icon_color=MUTED,
+                            icon_color=FAINT,
+                            icon_size=20,
                             on_click=lambda _, tid=task_id: self.request_delete_task(tid),
                         )
                     ] if editable and task_id is not None else []),
@@ -4251,7 +4283,7 @@ class EntpFletApp(StructureUI):
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            height=64,
+            height=54,
             padding=ft.Padding.only(left=4, right=14),
             bgcolor=SURFACE,
             border_radius=10,
@@ -4288,8 +4320,8 @@ class EntpFletApp(StructureUI):
             bgcolor=SURFACE,
             border=ft.Border.all(1, LINE),
             border_radius=14,
-            padding=ft.Padding.symmetric(horizontal=6, vertical=4),
-            margin=ft.Margin.only(bottom=8),
+            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+            margin=ft.Margin.only(bottom=6),
         )
 
     def quick_add_today_task(self, event) -> None:
@@ -4409,9 +4441,7 @@ class EntpFletApp(StructureUI):
             ),
             expand=True,
         )
-        return self._page_shell(
-            ft.Row([body], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.START)
-        )
+        return self._page_shell(constrained(body, WIDE_WIDTH))
 
     def _full_completion_calendar(self, completion: dict[str, int]) -> ft.Card:
         month = self.calendar_month
