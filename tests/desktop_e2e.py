@@ -579,7 +579,7 @@ class DesktopE2ERunner:
         self.ui.quick_idea_input.value = ""
         self.ui.quick_idea_input.on_submit(SimpleNamespace(control=self.ui.quick_idea_input))
         assert len(self.ui.db.list_thoughts()) == before_thoughts
-        assert self.ui.quick_idea_input.error_text == "先写下一句话灵感"
+        assert self.ui.quick_idea_input.error == "先写下一句话灵感"
         return "空任务不创建；空灵感就地提示且不污染数据库"
 
     def _visible_entry_points(self) -> str:
