@@ -315,6 +315,12 @@ class StructureUI:
                 parts.append(f"自主活动 {len(facts['activities'])}")
             if facts["recoveries"]:
                 parts.append(f"恢复 {len(facts['recoveries'])}")
+            if is_today and not anchors:
+                later = next((a for a in self.db.upcoming_anchors() if a["anchor_date"] > day), None)
+                if later:
+                    later_day = date.fromisoformat(later["anchor_date"])
+                    parts.insert(0, f"下一个外部安排：{later_day.month}月{later_day.day}日 "
+                                    f"{clock(later) if later['start_at'] else ''} {later['title']}".replace("  ", " "))
             summary = " · ".join(parts) or ("今天没有必须在固定时间处理的外部安排" if is_today else "这一天没有外部安排记录")
             return surface(panel_header(title, summary, icon=ft.Icons.VIEW_TIMELINE_OUTLINED, trailing=trailing),
                            padding=ft.Padding.symmetric(horizontal=16, vertical=10), radius=16,
@@ -355,8 +361,9 @@ class StructureUI:
         row = self.db.row("SELECT * FROM external_anchors WHERE id=?",(anchor_id,)) if anchor_id else None
         def value(key, default=""):
             return row[key] if row else default
-        title = field("事件名称",value("title"))
-        source = field("真实外部来源",value("source"))
+        title = field("事件名称 *",value("title"))
+        source = field("真实外部来源 *",value("source"))
+        source.helper = "谁定下的安排，例如：导师日程、学校通知、会议网站"
         kind = select("约束类型",[("event","事件发生"),("deadline","真实截止")],value("kind","event"))
         day = self._date_field("日期",value("anchor_date",self.db.today_iso()))
         start = self._time_field("开始 / 截止时间（可选）",datetime.fromisoformat(row["start_at"]).strftime("%H:%M") if row and row["start_at"] else "")
@@ -370,6 +377,14 @@ class StructureUI:
             if key in fields:
                 fields[key].value = saved
         def save(_):
+            missing = False
+            for control in (title, source):
+                empty = not (control.value or "").strip()
+                control.error = "必填" if empty else None
+                missing = missing or empty
+            if missing:
+                self.page.update()
+                return
             def stamp(day_value,time_value):
                 if not time_value:
                     return ""
@@ -383,6 +398,10 @@ class StructureUI:
                 consequence=consequence.value,task_id=self._reference(task),anchor_id=anchor_id,status=status.value)
             ended = status.value=="ended" and (not row or row["status"]!="ended")
             self._structure_saved()
+            saved_day = date.fromisoformat(day.value)
+            notify = getattr(self, "_notify_success", None)
+            if notify:
+                notify(f"已保存外部锚点「{title.value.strip()}」· {saved_day.month}月{saved_day.day}日")
             if ended:
                 self._offer_recovery(aid)
         history = self.db.rows("SELECT * FROM structure_events WHERE entity_type='external_anchors' AND entity_id=? ORDER BY id",(str(anchor_id),)) if row else []
@@ -418,6 +437,29 @@ class StructureUI:
                     ft.TextButton("取消", on_click=lambda _: self._structure_back())], wrap=True),
         ], route=("anchor_new_task", {"anchor_id": anchor_id, "draft": draft}),
             fields={"new_task_title": title, "new_task_mainline": mainline})
+
+    def _upcoming_anchor_card(self, focus_task_id=None):
+        """Real external arrangements from today on, so future ones stay visible."""
+        today = date.fromisoformat(self.db.today_iso())
+        items = []
+        for anchor in self.db.upcoming_anchors(limit=5):
+            start = date.fromisoformat(anchor["anchor_date"])
+            gap = (start - today).days
+            when = "今天" if gap == 0 else "明天" if gap == 1 else f"{start.month}月{start.day}日起" if gap < 0 else f"{start.month}月{start.day}日"
+            clock = datetime.fromisoformat(anchor["start_at"]).strftime(" %H:%M") if anchor["start_at"] else ""
+            deadline = anchor["kind"] == "deadline"
+            items.append(fact_row(ft.Icons.FLAG_ROUNDED if deadline else ft.Icons.EVENT_ROUNDED, anchor["title"],
+                meta=f"{when}{clock} · {'截止' if deadline else '事件'} · {anchor['source']}",
+                color=RED if deadline else BLUE, bgcolor=RED_SOFT if deadline else BLUE_SOFT,
+                badge=tag(f"{gap} 天后") if gap > 1 else None,
+                on_click=lambda _, aid=anchor["id"]: self.open_anchor(aid)))
+        if not items:
+            items.append(ft.Container(text("还没有即将到来的外部安排。", small=True),
+                                      padding=ft.Padding.symmetric(horizontal=10, vertical=4)))
+        header = panel_header("接下来的外部安排", "真实外部锚点，按时间排序", icon=ft.Icons.EVENT_NOTE_OUTLINED,
+            trailing=[tool_button("添加", ft.Icons.ADD_ROUNDED,
+                                  lambda _: self.open_anchor(default_task_id=focus_task_id), color=BLUE)])
+        return card([header, ft.Column(items, spacing=2)])
 
     def _offer_recovery(self, anchor_id):
         # A single suggestion on the user's transition, never on page refresh.

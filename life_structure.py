@@ -160,6 +160,16 @@ class LifeStructure:
         if task_id is not None and self.get_task(task_id) is None:
             raise ValueError("关联任务不存在")
 
+    def upcoming_anchors(self, limit=5):
+        """Active anchors that have not ended yet (today included), soonest first."""
+        today = self.today_iso()
+        upcoming = []
+        for row in self.rows("SELECT * FROM external_anchors WHERE status='active' ORDER BY anchor_date, start_at, id"):
+            end = datetime.fromisoformat(row["end_at"]).astimezone().date().isoformat() if row["end_at"] else row["anchor_date"]
+            if end >= today:
+                upcoming.append(row)
+        return upcoming[:limit]
+
     def save_anchor(self, *, title, source, kind, anchor_date, start_at="", end_at="",
                     consequence="", task_id=None, anchor_id=None, status="active"):
         if not title.strip() or not source.strip():

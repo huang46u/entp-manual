@@ -1525,9 +1525,21 @@ class EntpFletApp(StructureUI):
             int(task["id"]) == self.selected_task_id for task in tasks
         ):
             self.selected_task_id = None
-        self.detail_holder.content = self.calendar_holder
+        self.detail_holder.content = self._side_column()
         if update:
             self.page.update()
+
+    def _side_column(self) -> ft.Column:
+        """Right column of the current page: completion calendar + upcoming anchors."""
+        focus = self.db.get_focus_task(self.current_mid)
+        return ft.Column(
+            [
+                self.calendar_holder,
+                self._upcoming_anchor_card(int(focus["id"]) if focus else None),
+            ],
+            spacing=14,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
 
     def _focus_card(self, focus) -> ft.Card:
         if not focus:
@@ -2632,13 +2644,13 @@ class EntpFletApp(StructureUI):
     def quick_add_idea(self, event) -> None:
         title = str(self.quick_idea_input.value or "").strip()
         if not title:
-            self.quick_idea_input.error_text = "先写下一句话灵感"
+            self.quick_idea_input.error = "先写下一句话灵感"
             self.quick_idea_input.update()
             return
         self.db.create_thought(title, mainline_id=None)
         self._sync_markdown()
         self.quick_idea_input.value = ""
-        self.quick_idea_input.error_text = None
+        self.quick_idea_input.error = None
         self.selected_thought_id = None
         self.show_view(self.NAV_IDEAS)
 
@@ -3494,10 +3506,10 @@ class EntpFletApp(StructureUI):
             body = str(body_field.value or "")
             if not title:
                 if require_title or body.strip():
-                    title_field.error_text = "先给这条主线一个标题"
+                    title_field.error = "先给这条主线一个标题"
                     title_field.update()
                 return None
-            title_field.error_text = None
+            title_field.error = None
             mainline_id = state["mainline_id"]
             if mainline_id is None:
                 mainline_id = self.db.create_mainline(title, body)
@@ -5129,7 +5141,7 @@ class EntpFletApp(StructureUI):
             return
         self.focus_holder.visible = True
         self.task_holder.controls = self._task_section(self.db.list_tasks(self.current_mid))
-        self.detail_holder.content = self.calendar_holder
+        self.detail_holder.content = self._side_column()
         self.page.update()
 
     def close_task_detail(self) -> None:

@@ -383,6 +383,37 @@ class StructureUiTests(unittest.TestCase):
         self.assertEqual(a._structure_fields["title"].value,"组会")
         self.assertEqual(self.db.row("SELECT COUNT(*) FROM tasks")[0],before)
 
+    def test_anchor_missing_source_shows_inline_error_and_saves_nothing(self):
+        a = self.app
+        a.open_anchor()
+        a._structure_fields["title"].value = "ITI seminar"
+        self.click("保存外部锚点")
+        self.assertEqual(a._structure_fields["source"].error,"必填")
+        self.assertIsNone(a._structure_fields["title"].error)
+        self.assertEqual(a._structure_route,("anchor",None))
+        self.assertIsNone(self.db.row("SELECT id FROM external_anchors"))
+        a._structure_fields["source"].value = "学校seminar"
+        notes = []
+        a._notify_success = notes.append
+        self.click("保存外部锚点")
+        self.assertIsNotNone(self.db.row("SELECT id FROM external_anchors"))
+        self.assertTrue(notes and "ITI seminar" in notes[0])
+
+    def test_future_anchor_is_visible_on_current_page_and_today_summary(self):
+        a = self.app
+        from datetime import timedelta
+        later = (date.fromisoformat(self.db.today_iso())+timedelta(days=41)).isoformat()
+        self.db.save_anchor(title="ITI seminar",source="学校seminar",kind="event",anchor_date=later,
+                            start_at=f"{later}T09:00:00+01:00")
+        self.db.save_anchor(title="已结束的旧事",source="组委会",kind="event",anchor_date=later,status="ended")
+        upcoming = [r["title"] for r in self.db.upcoming_anchors()]
+        self.assertEqual(upcoming,["ITI seminar"])
+        card_texts = [str(c.value) for c in _walk(a._upcoming_anchor_card()) if isinstance(c,ft.Text)]
+        self.assertIn("ITI seminar",card_texts)
+        self.assertTrue(any("41 天后" in t for t in card_texts))
+        summary = [str(c.value) for c in _walk(a._today_structure(self.db.today_iso())) if isinstance(c,ft.Text)]
+        self.assertTrue(any("下一个外部安排" in t and "ITI seminar" in t for t in summary))
+
     def test_side_nav_keeps_selected_index_contract(self):
         from flet_app import SideNav
         chosen = []
