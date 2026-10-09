@@ -263,6 +263,9 @@ class StructureUI:
         if self._structure_flush:
             self._structure_flush()
         route = getattr(self, "_structure_route", None)
+        if route and route[0] == "anchor_new_task":
+            self.open_anchor(route[1]["anchor_id"], draft=route[1]["draft"], expand_details=True)
+            return
         if route and route[0] in ("evidence", "summary"):
             if route[0] == "evidence":
                 iteration = self.db.row("SELECT experiment_id FROM experiment_iterations WHERE id=?", (route[1],))
@@ -348,7 +351,7 @@ class StructureUI:
         return card([header, ft.Column(rows, spacing=2), ft.Divider(height=1, color=LINE),
                      ft.Row(record, spacing=2, wrap=True)])
 
-    def open_anchor(self, anchor_id=None, *, default_task_id=None):
+    def open_anchor(self, anchor_id=None, *, default_task_id=None, draft=None, expand_details=False):
         row = self.db.row("SELECT * FROM external_anchors WHERE id=?",(anchor_id,)) if anchor_id else None
         def value(key, default=""):
             return row[key] if row else default
@@ -363,6 +366,9 @@ class StructureUI:
         task = self._task_selector(value("task_id",default_task_id))
         status = select("状态",[("active","有效"),("ended","已结束"),("cancelled","已取消")],value("status","active"))
         fields = dict(title=title,source=source,kind=kind,day=day,start=start,end_day=end_day,end=end,consequence=consequence,task=task,status=status)
+        for key,saved in (draft or {}).items():
+            if key in fields:
+                fields[key].value = saved
         def save(_):
             def stamp(day_value,time_value):
                 if not time_value:
@@ -380,10 +386,38 @@ class StructureUI:
             if ended:
                 self._offer_recovery(aid)
         history = self.db.rows("SELECT * FROM structure_events WHERE entity_type='external_anchors' AND entity_id=? ORDER BY id",(str(anchor_id),)) if row else []
-        details = expansion(title=text("更多信息"),controls=[end_day,end,consequence,task,status,
-            *[text(f"{r['occurred_at']} · {r['event_type']}",small=True) for r in history]])
+        create_task = ft.Row([tool_button("创建新任务", ft.Icons.ADD_TASK_ROUNDED,
+            lambda _: self._open_anchor_new_task(anchor_id), color=BLUE)])
+        details = expansion(title=text("更多信息"),controls=[end_day,end,consequence,task,create_task,status,
+            *[text(f"{r['occurred_at']} · {r['event_type']}",small=True) for r in history]],expanded=expand_details)
         self._structure_surface("外部锚点",[text("自主安排请放在自主活动中。外部锚点不会创建或完成任务。",small=True),
             title,source,kind,day,start,details,ft.FilledButton("保存外部锚点",on_click=save)],route=("anchor",anchor_id),fields=fields)
+
+    def _open_anchor_new_task(self, anchor_id, draft=None):
+        """Create a task without leaving the anchor flow; returns to the form."""
+        if draft is None:
+            draft = {k: f.value for k, f in self._structure_fields.items()}
+        mainlines = [(str(r["id"]), r["name"]) for r in self.db.list_mainlines() if str(r["status"]) != "已归档"]
+        current = str(self.db.current_mainline_id())
+        title = field("新任务标题", draft.get("title") or "")
+        mainline = select("放入主线", mainlines, current if any(k==current for k,_ in mainlines) else mainlines[0][0])
+        def create(_):
+            name = (title.value or "").strip()
+            if not name:
+                raise ValueError("请填写新任务标题")
+            task_id = self.db.create_task(int(mainline.value), name)
+            self._sync_markdown()
+            self.open_anchor(anchor_id, draft={**draft, "task": str(task_id)}, expand_details=True)
+            notify = getattr(self, "_notify_success", None)
+            if notify:
+                notify(f"已创建任务「{name}」并关联到外部锚点")
+        self._structure_surface("创建新任务", [
+            text("创建后会自动选为这个外部锚点的关联任务，并回到外部锚点页面。", small=True),
+            title, mainline,
+            ft.Row([ft.FilledButton("创建并关联", icon=ft.Icons.ADD_TASK_ROUNDED, on_click=create),
+                    ft.TextButton("取消", on_click=lambda _: self._structure_back())], wrap=True),
+        ], route=("anchor_new_task", {"anchor_id": anchor_id, "draft": draft}),
+            fields={"new_task_title": title, "new_task_mainline": mainline})
 
     def _offer_recovery(self, anchor_id):
         # A single suggestion on the user's transition, never on page refresh.
@@ -786,7 +820,8 @@ class StructureUI:
             kind,ref = route
             handlers = {"anchor":self.open_anchor,"activity":self.open_activity,"waiting":self.open_waiting,
                 "worry":self.open_worry,"assessment":self.open_assessment,"structure_day":self.open_structure_day,
-                "evidence":self.open_evidence,"summary":self.open_experiment_summary}
+                "evidence":self.open_evidence,"summary":self.open_experiment_summary,
+                "anchor_new_task":lambda ref:self._open_anchor_new_task(ref["anchor_id"],ref["draft"])}
             if kind=="experiment":
                 self.open_experiment(experiment_id=ref)
             elif kind=="new_experiment":

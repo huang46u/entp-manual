@@ -349,6 +349,40 @@ class StructureUiTests(unittest.TestCase):
         done = a._task_row(self.db.get_task(other),completed=True,subtasks=[])
         self.assertFalse(any(isinstance(c,ft.IconButton) and c.icon==ft.Icons.ADD_ROUNDED for c in _walk(done)))
 
+    def test_anchor_can_create_and_link_a_new_task_then_return(self):
+        a = self.app
+        a.open_anchor()
+        f = a._structure_fields
+        f["title"].value = "论文摘要提交"
+        f["source"].value = "会议网站"
+        f["kind"].value = "deadline"
+        self.click("创建新任务")
+        self.assertEqual(a._structure_route[0],"anchor_new_task")
+        self.assertEqual(a._structure_fields["new_task_title"].value,"论文摘要提交")
+        a._structure_fields["new_task_title"].value = "准备摘要初稿"
+        self.click("创建并关联")
+        created = self.db.row("SELECT id,mainline_id FROM tasks WHERE title='准备摘要初稿'")
+        self.assertEqual(created["mainline_id"],a.current_mid)
+        # Back on the anchor form: typed draft kept, new task preselected.
+        f = a._structure_fields
+        self.assertEqual(a._structure_route,("anchor",None))
+        self.assertEqual((f["title"].value,f["source"].value,f["kind"].value),("论文摘要提交","会议网站","deadline"))
+        self.assertEqual(f["task"].value,str(created["id"]))
+        self.assertIn(str(created["id"]),[o.key for o in f["task"].options])
+        self.click("保存外部锚点")
+        self.assertEqual(self.db.row("SELECT task_id FROM external_anchors")["task_id"],created["id"])
+
+    def test_cancel_new_task_returns_to_anchor_draft(self):
+        a = self.app
+        a.open_anchor()
+        a._structure_fields["title"].value = "组会"
+        self.click("创建新任务")
+        before = self.db.row("SELECT COUNT(*) FROM tasks")[0]
+        self.click("取消")
+        self.assertEqual(a._structure_route,("anchor",None))
+        self.assertEqual(a._structure_fields["title"].value,"组会")
+        self.assertEqual(self.db.row("SELECT COUNT(*) FROM tasks")[0],before)
+
     def test_side_nav_keeps_selected_index_contract(self):
         from flet_app import SideNav
         chosen = []
