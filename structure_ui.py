@@ -6,6 +6,7 @@ import shutil
 import uuid
 from datetime import date, datetime, time
 from pathlib import Path
+from types import SimpleNamespace
 
 import flet as ft
 from life_structure import ASSESS_LABELS, WAIT_LABELS
@@ -47,7 +48,7 @@ def text(value, *, small=False):
 
 def fit_actions(controls):
     result = []
-    for control in stretch_dropdowns(controls):
+    for control in controls:
         pending = [control]
         while pending:
             node = pending.pop()
@@ -67,8 +68,9 @@ def editable_controls(root):
     pending = [root]
     while pending:
         node = pending.pop()
-        if isinstance(node,(ft.TextField,ft.Dropdown)):
+        if isinstance(node,(ft.TextField,ft.Dropdown,SelectField)):
             yield node
+            continue
         children = list(getattr(node,"controls",[]) or [])
         content = getattr(node,"content",None)
         if isinstance(content,ft.Control):
@@ -107,38 +109,99 @@ def field(label, value="", *, multiline=False):
                         focused_border_color=BLUE, text_size=15)
 
 
-def select(label, options, value=None):
-    return ft.Dropdown(label=label, value=value, options=[ft.DropdownOption(key=str(k),text=v) for k,v in options],
-                       border_radius=12, border_color=LINE, focused_border_color=BLUE,
-                       # Long lists scroll inside ~8 rows instead of covering the form.
-                       menu_height=320 if len(options) > 8 else None)
+class SelectField(ft.Container):
+    """Field-styled single-choice selector; clicking anywhere on it opens the menu.
 
-
-def sized_dropdown(dropdown):
-    """Give a dropdown, and its popup menu, exactly the width of its slot.
-
-    Flutter treats an explicit infinite width as the menu's minimum width, so
-    a stretched dropdown opened a menu spanning the whole window. A full-width
-    wrapper measures the real slot and hands that finite width to both.
+    Flutter's DropdownMenu only reliably opens from its trailing arrow when
+    the text part is read-only, so form choices use a PopupMenuButton whose
+    whole surface is the tap target. The menu matches the field's measured
+    width and long lists scroll within about eight rows. The public surface
+    mirrors what the forms used from ``ft.Dropdown``: ``value`` (option key),
+    ``options`` (objects with ``key`` / ``text``) and ``label``.
     """
-    def resize(event):
+
+    MENU_MAX_HEIGHT = 320
+
+    def __init__(self, label, options, value=None):
+        super().__init__(width=float("inf"), on_size_change=self._match_width)
+        self._label = str(label)
+        self.options = [SimpleNamespace(key=str(k), text=str(t)) for k, t in options]
+        self._value_text = ft.Text("", size=15, color=INK, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True)
+        face = ft.Container(
+            ft.Column([
+                ft.Text(self._label, size=12, color=MUTED, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Row([self._value_text, ft.Icon(ft.Icons.ARROW_DROP_DOWN_ROUNDED, size=24, color=MUTED)],
+                       spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=0, tight=True),
+            width=float("inf"),
+            padding=ft.Padding.only(left=14, right=8, top=7, bottom=6),
+            border=ft.Border.all(1, LINE),
+            border_radius=12,
+            bgcolor=SURFACE,
+        )
+        self._menu = ft.PopupMenuButton(
+            content=face,
+            items=[],
+            menu_position=ft.PopupMenuPosition.UNDER,
+            shape=rounded(12),
+            bgcolor=SURFACE,
+            tooltip=None,
+            size_constraints=ft.BoxConstraints(max_height=self.MENU_MAX_HEIGHT) if len(self.options) > 8 else None,
+        )
+        self.content = self._menu
+        self._value = None
+        self.value = value
+
+    @property
+    def label(self):
+        return self._label
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, value):
+        keys = [o.key for o in self.options]
+        value = None if value is None else str(value)
+        if value not in keys:
+            # Keep an unknown value visible-but-empty rather than guessing.
+            value = None
+        self._value = value
+        chosen = next((o.text for o in self.options if o.key == value), "")
+        self._value_text.value = chosen or "请选择"
+        self._value_text.color = INK if chosen else FAINT
+        self._menu.items = [
+            ft.PopupMenuItem(content=o.text, checked=o.key == value,
+                             on_click=lambda _, key=o.key: self._choose(key))
+            for o in self.options
+        ]
+
+    def _choose(self, key):
+        self.value = key
+        try:
+            self.update()
+        except Exception:
+            pass  # not mounted (tests or a rebuilt form)
+
+    def _match_width(self, event):
         width = float(getattr(event, "width", 0) or 0)
-        if width > 0 and dropdown.width != width:
-            dropdown.width = dropdown.menu_width = width
-            dropdown.update()
-    return ft.Container(dropdown, width=float("inf"), on_size_change=resize)
+        if width <= 0:
+            return
+        current = self._menu.size_constraints
+        if current is not None and current.min_width == width:
+            return
+        self._menu.size_constraints = ft.BoxConstraints(
+            min_width=width, max_width=width,
+            max_height=self.MENU_MAX_HEIGHT if len(self.options) > 8 else float("inf"))
+        try:
+            self._menu.update()
+        except Exception:
+            pass
 
 
-def stretch_dropdowns(controls):
-    """Wrap every dropdown in nested ``controls`` lists with :func:`sized_dropdown`."""
-    result = []
-    for control in controls:
-        if isinstance(control, ft.Dropdown):
-            control = sized_dropdown(control)
-        elif isinstance(getattr(control, "controls", None), list):
-            control.controls = stretch_dropdowns(control.controls)
-        result.append(control)
-    return result
+def select(label, options, value=None):
+    return SelectField(label, options, value)
 
 
 def expansion(*, title, controls, **kwargs):

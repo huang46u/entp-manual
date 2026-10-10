@@ -414,24 +414,24 @@ class StructureUiTests(unittest.TestCase):
         summary = [str(c.value) for c in _walk(a._today_structure(self.db.today_iso())) if isinstance(c,ft.Text)]
         self.assertTrue(any("下一个外部安排" in t and "ITI seminar" in t for t in summary))
 
-    def test_dropdown_menus_take_the_measured_field_width(self):
-        from structure_ui import select, fit_actions, RHYTHM_CARD_WIDTH
-        dropdown = select("约束类型",[("event","事件发生"),("deadline","真实截止")],"event")
-        # An infinite width becomes the popup's minimum width in Flutter.
-        self.assertIsNone(dropdown.width)
-        nested = ft.Column([dropdown])
-        (wrapper,) = fit_actions([nested])[0].controls
-        self.assertIs(wrapper.content,dropdown)
-        with patch.object(ft.Dropdown,"update",lambda self:None):
-            wrapper.on_size_change(SimpleNamespace(width=802.0))
-        self.assertEqual((dropdown.width,dropdown.menu_width),(802.0,802.0))
+    def test_select_field_opens_from_the_whole_field_and_matches_its_width(self):
+        from structure_ui import select, SelectField, RHYTHM_CARD_WIDTH
+        field = select("约束类型",[("event","事件发生"),("deadline","真实截止")],"event")
+        self.assertIsInstance(field,SelectField)
+        # The PopupMenuButton's content is the full field face, so any click on it opens the menu.
+        self.assertIsInstance(field.content,ft.PopupMenuButton)
+        self.assertEqual(field.content.content.width,float("inf"))
+        self.assertEqual([i.content for i in field.content.items],["事件发生","真实截止"])
+        with patch.object(ft.PopupMenuButton,"update",lambda self:None), patch.object(SelectField,"update",lambda self:None):
+            field.on_size_change(SimpleNamespace(width=802.0))
+            next(i for i in field.content.items if i.content=="真实截止").on_click(None)
+        constraints = field.content.size_constraints
+        self.assertEqual((constraints.min_width,constraints.max_width),(802.0,802.0))
+        self.assertEqual(field.value,"deadline")
+        self.assertEqual([i.checked for i in field.content.items],[False,True])
         many = select("关联现有任务（可选）",[(str(i),f"任务 {i}") for i in range(12)])
-        self.assertEqual(many.menu_height,320)
-        a = self.app
-        a.open_anchor()
-        self.assertTrue(any(isinstance(c,ft.Container) and c.content is a._structure_fields["kind"]
-                            for c in _walk(a.content_switcher.content)))
-        menu = a._rhythm_menu()
+        self.assertEqual(many.content.size_constraints.max_height,SelectField.MENU_MAX_HEIGHT)
+        menu = self.app._rhythm_menu()
         self.assertEqual((menu.size_constraints.min_width,menu.size_constraints.max_width),
                          (RHYTHM_CARD_WIDTH,RHYTHM_CARD_WIDTH))
 
