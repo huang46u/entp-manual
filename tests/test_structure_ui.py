@@ -435,6 +435,36 @@ class StructureUiTests(unittest.TestCase):
         self.assertEqual((menu.size_constraints.min_width,menu.size_constraints.max_width),
                          (RHYTHM_CARD_WIDTH,RHYTHM_CARD_WIDTH))
 
+    def test_task_row_shows_linked_anchor_badge_that_opens_the_anchor(self):
+        a = self.app
+        a.expanded_task_ids = set()
+        a.subtask_input_parent_id = None
+        later = self.db.today_iso()
+        aid = self.db.save_anchor(title="ITI seminar",source="学校seminar",kind="event",anchor_date=later,task_id=self.task)
+        other = self.db.create_task(a.current_mid,"未关联的任务")
+        self.db.save_anchor(title="已结束",source="组委会",kind="event",anchor_date=later,task_id=other,status="ended")
+        a._task_anchors = self.db.anchors_by_task()
+        def badges(task_id):
+            row = a._task_row(self.db.get_task(task_id),completed=False,subtasks=[])
+            return [c for c in _walk(row) if getattr(c,"data",None)=="anchor-badge"]
+        (badge,) = badges(self.task)
+        self.assertTrue(any("ITI seminar" in str(getattr(c,"value","")) for c in _walk(badge)))
+        self.assertEqual(badges(other),[])
+        badge.on_click(None)
+        self.assertEqual(a._structure_route,("anchor",aid))
+        self.assertEqual(a._structure_fields["title"].value,"ITI seminar")
+        # Several anchors on one task: a menu lists each of them.
+        second = self.db.save_anchor(title="摘要截止",source="会议网站",kind="deadline",anchor_date=later,task_id=self.task)
+        a._task_anchors = self.db.anchors_by_task()
+        (menu,) = badges(self.task)
+        self.assertIsInstance(menu,ft.PopupMenuButton)
+        self.assertEqual(len(menu.items),2)
+        next(i for i in menu.items if "摘要截止" in i.content).on_click(None)
+        self.assertEqual(a._structure_route,("anchor",second))
+        a.inspiration_capture_open = False
+        focus = a._focus_card(self.db.get_task(self.task))
+        self.assertTrue(any(getattr(c,"data",None)=="anchor-badge" for c in _walk(focus)))
+
     def test_side_nav_keeps_selected_index_contract(self):
         from flet_app import SideNav
         chosen = []

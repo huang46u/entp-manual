@@ -464,18 +464,55 @@ class StructureUI:
         ], route=("anchor_new_task", {"anchor_id": anchor_id, "draft": draft}),
             fields={"new_task_title": title, "new_task_mainline": mainline})
 
+    def _anchor_when(self, anchor):
+        """Return (wording such as 今天 09:00 / 11月19日, days until start)."""
+        today = date.fromisoformat(self.db.today_iso())
+        start = date.fromisoformat(anchor["anchor_date"])
+        gap = (start - today).days
+        when = "今天" if gap == 0 else "明天" if gap == 1 else f"{start.month}月{start.day}日起" if gap < 0 else f"{start.month}月{start.day}日"
+        clock = datetime.fromisoformat(anchor["start_at"]).strftime(" %H:%M") if anchor["start_at"] else ""
+        return when + clock, gap
+
+    def _anchor_badge(self, anchors):
+        """Clickable chip telling a task row it is tied to real external anchors.
+
+        One anchor opens its detail form directly; several open a small menu
+        listing each of them.
+        """
+        first = anchors[0]
+        deadline = first["kind"] == "deadline"
+        color, soft = (RED, RED_SOFT) if deadline else (BLUE, BLUE_SOFT)
+        when, _ = self._anchor_when(first)
+        label = f"{when} · {first['title']}" + (f" 等 {len(anchors)} 个" if len(anchors) > 1 else "")
+        chip = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.FLAG_ROUNDED if deadline else ft.Icons.EVENT_ROUNDED, size=14, color=color),
+                    ft.Text(label, size=12, weight=ft.FontWeight.W_600, color=color, max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS)], spacing=4, tight=True),
+            padding=ft.Padding.symmetric(horizontal=9, vertical=4), bgcolor=soft, border_radius=99,
+            data="anchor-badge")
+        if len(anchors) == 1:
+            chip.tooltip = f"关联外部锚点：{first['title']}（{first['source']}），点击查看详情"
+            chip.on_click = lambda _, aid=first["id"]: self.open_anchor(aid)
+            chip.ink = True
+            return chip
+        chip.data = None  # the menu below is the clickable badge
+        items = []
+        for anchor in anchors:
+            anchor_when, _ = self._anchor_when(anchor)
+            items.append(ft.PopupMenuItem(content=f"{anchor_when} · {anchor['title']}",
+                icon=ft.Icons.FLAG_ROUNDED if anchor["kind"] == "deadline" else ft.Icons.EVENT_ROUNDED,
+                on_click=lambda _, aid=anchor["id"]: self.open_anchor(aid)))
+        return ft.PopupMenuButton(content=chip, items=items, tooltip=f"关联 {len(anchors)} 个外部锚点，点击选择查看",
+                                  shape=rounded(14), bgcolor=SURFACE, data="anchor-badge")
+
     def _upcoming_anchor_card(self, focus_task_id=None):
         """Real external arrangements from today on, so future ones stay visible."""
-        today = date.fromisoformat(self.db.today_iso())
         items = []
         for anchor in self.db.upcoming_anchors(limit=5):
-            start = date.fromisoformat(anchor["anchor_date"])
-            gap = (start - today).days
-            when = "今天" if gap == 0 else "明天" if gap == 1 else f"{start.month}月{start.day}日起" if gap < 0 else f"{start.month}月{start.day}日"
-            clock = datetime.fromisoformat(anchor["start_at"]).strftime(" %H:%M") if anchor["start_at"] else ""
+            when, gap = self._anchor_when(anchor)
             deadline = anchor["kind"] == "deadline"
             items.append(fact_row(ft.Icons.FLAG_ROUNDED if deadline else ft.Icons.EVENT_ROUNDED, anchor["title"],
-                meta=f"{when}{clock} · {'截止' if deadline else '事件'} · {anchor['source']}",
+                meta=f"{when} · {'截止' if deadline else '事件'} · {anchor['source']}",
                 color=RED if deadline else BLUE, bgcolor=RED_SOFT if deadline else BLUE_SOFT,
                 badge=tag(f"{gap} 天后") if gap > 1 else None,
                 on_click=lambda _, aid=anchor["id"]: self.open_anchor(aid)))

@@ -168,7 +168,15 @@ class LifeStructure:
             end = datetime.fromisoformat(row["end_at"]).astimezone().date().isoformat() if row["end_at"] else row["anchor_date"]
             if end >= today:
                 upcoming.append(row)
-        return upcoming[:limit]
+        return upcoming if limit is None else upcoming[:limit]
+
+    def anchors_by_task(self):
+        """Upcoming active anchors grouped by linked task id, soonest first."""
+        grouped = {}
+        for row in self.upcoming_anchors(limit=None):
+            if row["task_id"] is not None:
+                grouped.setdefault(int(row["task_id"]), []).append(row)
+        return grouped
 
     def save_anchor(self, *, title, source, kind, anchor_date, start_at="", end_at="",
                     consequence="", task_id=None, anchor_id=None, status="active"):

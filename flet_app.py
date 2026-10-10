@@ -1564,6 +1564,7 @@ class EntpFletApp(StructureUI):
             )
         else:
             task_id = int(focus["id"])
+            focus_anchors = self.db.anchors_by_task().get(task_id, [])
             body = ft.Column(
                 [
                     ft.Row(
@@ -1593,6 +1594,7 @@ class EntpFletApp(StructureUI):
                                 ],
                                 spacing=6,
                             ),
+                            *([ft.Row([self._anchor_badge(focus_anchors)])] if focus_anchors else []),
                         ],
                         spacing=6,
                     ),
@@ -1685,6 +1687,7 @@ class EntpFletApp(StructureUI):
                 children_by_parent.setdefault(int(task["parent_task_id"]), []).append(task)
         active = [t for t in parents if str(t["status"]) != "完成"]
         completed = [t for t in parents if str(t["status"]) == "完成"]
+        self._task_anchors = self.db.anchors_by_task()
         rows: list[ft.Control] = [
             self._task_promotion_target(
                 ft.Row(
@@ -1926,6 +1929,10 @@ class EntpFletApp(StructureUI):
         focused = bool(task["is_focus"]) and not completed
         done_subtasks = sum(str(item["status"]) == "完成" for item in subtasks)
         add_subtask, hover = self._subtask_affordance(task_id) if not completed else (None, None)
+        anchors = getattr(self, "_task_anchors", None)
+        if anchors is None:
+            anchors = self.db.anchors_by_task()
+        linked = anchors.get(task_id, []) if not completed else []
         tile = ft.Container(
             content=ft.Row(
                 [
@@ -1962,6 +1969,7 @@ class EntpFletApp(StructureUI):
                         overflow=ft.TextOverflow.ELLIPSIS,
                         expand=True,
                     ),
+                    *([self._anchor_badge(linked)] if linked else []),
                     *([tag("正在上方推进", color=GREEN, bgcolor=GREEN_SOFT, icon=ft.Icons.PLAY_ARROW_ROUNDED)]
                       if focused else []),
                     *([tag(f"{done_subtasks}/{len(subtasks)}", color=BLUE, bgcolor=BLUE_SOFT)]
