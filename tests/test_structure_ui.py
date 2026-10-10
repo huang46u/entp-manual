@@ -523,6 +523,69 @@ class StructureUiTests(unittest.TestCase):
         next(i for i in menu.items if i.content and i.content.startswith("论文写作")).on_click(None)
         self.assertEqual(switched,[second])
 
+    def test_move_task_to_mainline_keeps_history_and_moves_open_plans(self):
+        db = self.db
+        source = db.current_mainline_id()
+        target = db.create_mainline("论文写作")
+        child = db.create_task(source,"子步骤",parent_task_id=self.task)
+        db.set_focus_task(self.task)
+        other = db.create_task(source,"留在原主线")
+        aid = db.save_anchor(title="组会",source="导师",kind="event",anchor_date=db.today_iso(),task_id=self.task)
+        self.assertTrue(db.move_task_to_mainline(self.task,target))
+        self.assertEqual(int(db.get_task(self.task)["mainline_id"]),target)
+        self.assertEqual(int(db.get_task(child)["mainline_id"]),target)
+        # Source picks a new focus; the moved task becomes the target's focus.
+        self.assertEqual(int(db.get_focus_task(source)["id"]),other)
+        self.assertEqual(int(db.get_focus_task(target)["id"]),self.task)
+        entry = db.row("SELECT mainline_id,mainline_name_snapshot FROM daily_entries WHERE task_id=? AND state='planned'",(self.task,))
+        self.assertEqual((entry["mainline_id"],entry["mainline_name_snapshot"]),(target,"论文写作"))
+        self.assertEqual(db.row("SELECT task_id FROM external_anchors WHERE id=?",(aid,))["task_id"],self.task)
+        # Completed history keeps the mainline it was done under.
+        db.set_daily_entry_completed(int(entry_id := db.row("SELECT id FROM daily_entries WHERE task_id=?",(self.task,))["id"]),True)
+        db.move_task_to_mainline(self.task,source)
+        done = db.row("SELECT state,mainline_name_snapshot FROM daily_entries WHERE id=?",(entry_id,))
+        self.assertEqual((done["state"],done["mainline_name_snapshot"]),("completed","论文写作"))
+        self.assertFalse(db.move_task_to_mainline(self.task,source))
+        with self.assertRaisesRegex(ValueError,"父任务"):
+            db.move_task_to_mainline(child,target)
+        archived = db.create_mainline("旧支线")
+        db.archive_mainline(archived)
+        with self.assertRaisesRegex(ValueError,"已归档"):
+            db.move_task_to_mainline(other,archived)
+
+    def test_row_menu_moves_task_and_undo_restores_position_and_focus(self):
+        a = self.app
+        a.expanded_task_ids = set(); a.subtask_input_parent_id = None; a.selected_task_id = None
+        refreshed = []
+        a._refresh_task_surface = lambda: refreshed.append(True)
+        shown = []
+        a.page.show_dialog = shown.append
+        source = a.current_mid
+        later = self.db.create_task(source,"后加的任务")
+        self.db.set_focus_task(self.task)
+        before_order = int(self.db.get_task(self.task)["sort_order"])
+        target = self.db.create_mainline("论文写作")
+        archived = self.db.create_mainline("旧支线"); self.db.archive_mainline(archived)
+        inbox = self.db.get_or_create_inbox()
+        row = a._task_row(self.db.get_task(self.task),completed=False,subtasks=[])
+        (menu,) = [c for c in _walk(row) if getattr(c,"data",None)=="move-task"]
+        labels = [i.content for i in menu.items]
+        self.assertIn("移到「论文写作」",labels)
+        self.assertIn("移到「收集箱」",labels)
+        self.assertFalse(any("旧支线" in l for l in labels))
+        self.assertFalse(any(self.db.get_task(self.task)["mainline_name"] in l for l in labels))
+        next(i for i in menu.items if i.content=="移到「论文写作」").on_click(None)
+        self.assertEqual(int(self.db.get_task(self.task)["mainline_id"]),target)
+        self.assertTrue(refreshed)
+        bar = shown[-1]
+        self.assertIn("论文写作",bar.content.value)
+        bar.action.on_click(None)
+        moved_back = self.db.get_task(self.task)
+        self.assertEqual((int(moved_back["mainline_id"]),int(moved_back["sort_order"])),(source,before_order))
+        self.assertEqual(int(self.db.get_focus_task(source)["id"]),self.task)
+        self.assertNotEqual(inbox,target)
+        self.assertIsNotNone(later)
+
     def test_side_nav_keeps_selected_index_contract(self):
         from flet_app import SideNav
         chosen = []

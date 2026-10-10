@@ -1959,7 +1959,7 @@ class EntpFletApp(StructureUI):
         )
 
     def _subtask_affordance(self, task_id: int):
-        """Return a hover-revealed add-subtask button and the row hover handler.
+        """Return hover-revealed row actions (add subtask, move) and the handler.
 
         Hovering also records the row as the Shift+Enter target, so the
         keyboard shortcut acts on the task under the pointer.
@@ -1973,16 +1973,90 @@ class EntpFletApp(StructureUI):
             animate_opacity=120,
             on_click=lambda _, tid=task_id: self.begin_add_subtask(tid),
         )
+        move = self._move_task_menu(task_id)
+        move.opacity = 0
+        move.animate_opacity = 120
 
         def hover(event, tid=task_id) -> None:
             self._remember_subtask_parent(event, tid)
-            button.opacity = 1 if str(getattr(event, "data", "")).lower() == "true" else 0
-            try:
-                button.update()
-            except Exception:
-                pass  # Row was rebuilt between enter and exit.
+            visible = 1 if str(getattr(event, "data", "")).lower() == "true" else 0
+            for control in (button, move):
+                control.opacity = visible
+                try:
+                    control.update()
+                except Exception:
+                    pass  # Row was rebuilt between enter and exit.
 
-        return button, hover
+        return [button, move], hover
+
+    def _move_targets(self, task) -> list:
+        return [
+            m for m in self.db.list_mainlines()
+            if str(m["status"]) != "已归档" and int(m["id"]) != int(task["mainline_id"])
+        ]
+
+    def _move_task_menu(self, task_id: int, *, content: ft.Control | None = None, before=None) -> ft.PopupMenuButton:
+        """Menu listing every other unarchived mainline (the inbox included)."""
+        task = self.db.get_task(task_id)
+        targets = self._move_targets(task) if task else []
+
+        def move(mainline_id: int) -> None:
+            if before is not None:
+                before()
+            self.move_task_to_mainline(task_id, mainline_id)
+
+        items = [
+            ft.PopupMenuItem(
+                content=f"移到「{target['name']}」",
+                icon=ft.Icons.MOVE_TO_INBOX_OUTLINED if str(target["name"]) == "收集箱" else ft.Icons.FLAG_OUTLINED,
+                on_click=lambda _, mid=int(target["id"]): move(mid),
+            )
+            for target in targets
+        ] or [ft.PopupMenuItem(content="没有其他未归档的主线", disabled=True)]
+        return ft.PopupMenuButton(
+            content=content or ft.Container(
+                ft.Icon(ft.Icons.DRIVE_FILE_MOVE_OUTLINE, size=19, color=BLUE),
+                padding=8,
+            ),
+            items=items,
+            tooltip="移到其他主线（子任务一起移动）",
+            size_constraints=ft.BoxConstraints(min_width=240, max_width=420),
+            shape=rounded(14),
+            bgcolor=SURFACE,
+            data="move-task",
+        )
+
+    def move_task_to_mainline(self, task_id: int, mainline_id: int, *, offer_undo: bool = True) -> None:
+        task = self.db.get_task(task_id)
+        if task is None:
+            return
+        source_id, source_order = int(task["mainline_id"]), int(task["sort_order"] or 0)
+        was_focus = bool(task["is_focus"])
+        if not self.db.move_task_to_mainline(task_id, mainline_id):
+            return
+        if self.selected_task_id == task_id:
+            self.selected_task_id = None
+        self._sync_markdown()
+        self._refresh_task_surface()
+        if not offer_undo or getattr(self, "_quiet_mode", None):
+            return
+        target = next(m for m in self.db.list_mainlines() if int(m["id"]) == int(mainline_id))
+
+        def undo(_=None) -> None:
+            self.db.move_task_to_mainline(task_id, source_id, sort_order=source_order)
+            if was_focus:
+                self.db.set_focus_task(task_id)
+            self._sync_markdown()
+            self._refresh_task_surface()
+
+        self.page.show_dialog(
+            ft.SnackBar(
+                content=ft.Text(f"已把「{task['title']}」移到「{target['name']}」", size=14),
+                action=ft.SnackBarAction(label="撤销", on_click=undo),
+                bgcolor="#254D38",
+                duration=8000,
+            )
+        )
 
     def _task_row(self, task, *, completed: bool, subtasks) -> ft.Control:
         task_id = int(task["id"])
@@ -1991,7 +2065,7 @@ class EntpFletApp(StructureUI):
         can_expand = bool(subtasks) or self.subtask_input_parent_id == task_id
         focused = bool(task["is_focus"]) and not completed
         done_subtasks = sum(str(item["status"]) == "完成" for item in subtasks)
-        add_subtask, hover = self._subtask_affordance(task_id) if not completed else (None, None)
+        row_actions, hover = self._subtask_affordance(task_id) if not completed else ([], None)
         anchors = getattr(self, "_task_anchors", None)
         if anchors is None:
             anchors = self.db.anchors_by_task()
@@ -2041,7 +2115,7 @@ class EntpFletApp(StructureUI):
                       if focused else []),
                     *([tag(f"{done_subtasks}/{len(subtasks)}", color=BLUE, bgcolor=BLUE_SOFT)]
                       if subtasks else []),
-                    *([add_subtask] if add_subtask else []),
+                    *row_actions,
                     ft.IconButton(
                         ft.Icons.DELETE_OUTLINE_ROUNDED,
                         tooltip="删除任务",
@@ -2202,6 +2276,32 @@ class EntpFletApp(StructureUI):
             ),
         )
 
+        def leave_for_move() -> None:
+            save_fields(None)
+            self.close_task_detail()
+
+        mainline_name = str(task["mainline_name"] or "")
+        mainline_face = ft.Container(
+            ft.Row(
+                [
+                    ft.Icon(ft.Icons.FLAG_OUTLINED, size=15, color=MUTED),
+                    ft.Text(f"所属主线：{mainline_name}", size=13, color=INK_SOFT,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    *([] if is_subtask else [ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=17, color=MUTED)]),
+                ],
+                spacing=4,
+                tight=True,
+            ),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=5),
+            bgcolor=SURFACE_SOFT,
+            border_radius=99,
+            tooltip="子任务随父任务所在的主线" if is_subtask else None,
+        )
+        mainline_control = (
+            mainline_face if is_subtask
+            else self._move_task_menu(task_id, content=mainline_face, before=leave_for_move)
+        )
+
         header = ft.Container(
             content=ft.Row(
                 [
@@ -2215,6 +2315,7 @@ class EntpFletApp(StructureUI):
                         color=GREEN if completed else BLUE,
                         bgcolor=GREEN_SOFT if completed else BLUE_SOFT,
                     ),
+                    mainline_control,
                     ft.Container(expand=True),
                     ft.IconButton(
                         ft.Icons.FLAG_ROUNDED if focused else ft.Icons.FLAG_OUTLINED,
@@ -4407,11 +4508,11 @@ class EntpFletApp(StructureUI):
             ),
         )
         can_expand = bool(subtasks) or self.subtask_input_parent_id == task_id
-        add_subtask, hover = None, None
+        row_actions, hover = [], None
         if editable and not completed and task_id is not None:
             parent_row_task = self.db.get_task(task_id)
             if parent_row_task is not None and parent_row_task["parent_task_id"] is None:
-                add_subtask, hover = self._subtask_affordance(task_id)
+                row_actions, hover = self._subtask_affordance(task_id)
         row = ft.Container(
             content=ft.Row(
                 [
@@ -4442,7 +4543,7 @@ class EntpFletApp(StructureUI):
                         overflow=ft.TextOverflow.ELLIPSIS,
                     ),
                     ft.Row(meta, spacing=5, tight=True),
-                    *([add_subtask] if add_subtask else []),
+                    *row_actions,
                     *([
                         ft.IconButton(
                             ft.Icons.DELETE_OUTLINE_ROUNDED,

@@ -1218,6 +1218,55 @@ class Database(LifeStructure):
             self._ensure_focus_for_mainline(int(task["mainline_id"]), commit=False)
         return True
 
+    def move_task_to_mainline(
+        self, task_id: int, mainline_id: int, *, sort_order: int | None = None
+    ) -> bool:
+        """Move a top-level task and its subtasks to another mainline.
+
+        Open ledger plans follow the task (their mainline snapshot changes);
+        completed and carried entries keep the mainline they were done under.
+        Links from anchors, waiting items and experiments use the task id and
+        are unaffected. ``sort_order`` lets an undo restore the old position.
+        """
+        task = self.get_task(task_id)
+        if not task:
+            raise ValueError("任务已经不存在")
+        if task["parent_task_id"] is not None:
+            raise ValueError("子任务会随父任务一起移动，请移动它的父任务")
+        target = self.row("SELECT * FROM mainlines WHERE id = ?", (mainline_id,))
+        if not target:
+            raise ValueError("目标主线不存在")
+        if str(target["status"]) == "已归档":
+            raise ValueError("不能移到已归档的主线，请先在保管箱恢复它")
+        source_id = int(task["mainline_id"])
+        if source_id == int(mainline_id):
+            return False
+        with self.conn:
+            position = sort_order if sort_order is not None else self._next_task_sort_order(int(mainline_id), None)
+            # The hierarchy triggers require parent and children to share a
+            # mainline at every step, so detach the children, move the parent,
+            # then move and reattach the children in one statement.
+            children = [int(r["id"]) for r in self.rows("SELECT id FROM tasks WHERE parent_task_id = ?", (task_id,))]
+            self.conn.execute("UPDATE tasks SET parent_task_id = NULL WHERE parent_task_id = ?", (task_id,))
+            self.conn.execute(
+                "UPDATE tasks SET mainline_id = ?, sort_order = ?, is_focus = 0 WHERE id = ?",
+                (mainline_id, position, task_id),
+            )
+            for child_id in children:
+                self.conn.execute(
+                    "UPDATE tasks SET mainline_id = ?, parent_task_id = ? WHERE id = ?",
+                    (mainline_id, task_id, child_id),
+                )
+            self.conn.execute(
+                """UPDATE daily_entries
+                   SET mainline_id = ?, mainline_name_snapshot = ?, mainline_color_snapshot = ?, updated_at = ?
+                   WHERE task_id = ? AND state = 'planned'""",
+                (mainline_id, target["name"], target["color"], self.local_timestamp(), task_id),
+            )
+            self._ensure_focus_for_mainline(source_id, commit=False)
+            self._ensure_focus_for_mainline(int(mainline_id), commit=False)
+        return True
+
     def promote_subtask(self, task_id: int, *, keep_today: bool = False) -> bool:
         """将子任务拖出为父任务；若原父任务在今日，则保持它在今日可见。"""
         task = self.get_task(task_id)
