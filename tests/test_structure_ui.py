@@ -586,6 +586,17 @@ class StructureUiTests(unittest.TestCase):
         self.assertNotEqual(inbox,target)
         self.assertIsNotNone(later)
 
+    def test_expansion_titles_are_not_selectable_so_clicks_toggle(self):
+        a = self.app
+        surfaces = [a.open_anchor, a.open_waiting, a.open_worry,
+                    lambda: a.open_experiment(experiment_id=self.db.create_experiment(self.task,"参数是否影响拓扑"))]
+        for open_surface in surfaces:
+            open_surface()
+            tiles = [c for c in _walk(a.content_switcher.content) if isinstance(c,ft.ExpansionTile)]
+            self.assertTrue(tiles)
+            for tile in tiles:
+                self.assertFalse(tile.title.selectable,tile.title.value)
+
     def test_side_nav_keeps_selected_index_contract(self):
         from flet_app import SideNav
         chosen = []

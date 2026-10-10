@@ -206,6 +206,10 @@ def select(label, options, value=None):
 
 def expansion(*, title, controls, **kwargs):
     """Borderless disclosure section that sits quietly inside a panel."""
+    # A selectable title captures the pointer for text selection (I-beam
+    # cursor) and swallows the tap, so only the margins would toggle it.
+    if isinstance(title, ft.Text):
+        title.selectable = False
     kwargs.setdefault("expanded_cross_axis_alignment", ft.CrossAxisAlignment.STRETCH)
     return ft.ExpansionTile(title=title, controls=controls, shape=rounded(12), collapsed_shape=rounded(12),
                             tile_padding=ft.Padding.symmetric(horizontal=8),
