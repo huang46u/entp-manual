@@ -465,6 +465,64 @@ class StructureUiTests(unittest.TestCase):
         focus = a._focus_card(self.db.get_task(self.task))
         self.assertTrue(any(getattr(c,"data",None)=="anchor-badge" for c in _walk(focus)))
 
+    def _quick_add_fixture(self):
+        a = self.app
+        a.quick_task_plan = None
+        a.quick_plan_holder = ft.Container()
+        a.page.run_task = lambda *_: None
+        a.page.show_dialog = lambda *_: None
+        a.refresh_current_sections = lambda **_: None
+        return a
+
+    def test_quick_add_defaults_to_no_day_so_tasks_never_go_overdue(self):
+        from datetime import timedelta
+        a = self._quick_add_fixture()
+        a._refresh_quick_plan()
+        face_texts = [str(c.value) for c in _walk(a.quick_plan_holder) if isinstance(c,ft.Text)]
+        self.assertIn("不安排日期",face_texts)
+        a.quick_task_input.value = "随手记下的任务"
+        a.quick_add_task(SimpleNamespace(control=a.quick_task_input))
+        task = self.db.row("SELECT id,is_today FROM tasks WHERE title='随手记下的任务'")
+        self.assertEqual(task["is_today"],0)
+        self.assertIsNone(self.db.row("SELECT id FROM daily_entries WHERE task_id=?",(task["id"],)))
+        # Picking 明天 from the menu plans the ledger day without touching today.
+        menu = a.quick_plan_holder.content
+        next(i for i in menu.items if i.content=="明天").on_click(None)
+        tomorrow = (date.today()+timedelta(days=1)).isoformat()
+        self.assertEqual(a.quick_task_plan,tomorrow)
+        a.quick_task_input.value = "明天再做"
+        a.quick_add_task(SimpleNamespace(control=a.quick_task_input))
+        planned = self.db.row("SELECT t.id,t.is_today,de.entry_date FROM tasks t JOIN daily_entries de ON de.task_id=t.id WHERE t.title='明天再做'")
+        self.assertEqual((planned["is_today"],planned["entry_date"]),(0,tomorrow))
+        self.assertEqual(self.db.list_overdue_entries(self.db.today_iso()),[])
+        self.assertEqual(self.db.planned_days_by_task()[planned["id"]],tomorrow)
+        a.expanded_task_ids = set(); a.subtask_input_parent_id = None
+        a._task_plan_days = self.db.planned_days_by_task()
+        row = a._task_row(self.db.get_task(planned["id"]),completed=False,subtasks=[])
+        self.assertIn("明天",[str(c.value) for c in _walk(row) if isinstance(c,ft.Text)])
+        next(i for i in a.quick_plan_holder.content.items if i.content=="今天").on_click(None)
+        a.quick_task_input.value = "今天就做"
+        a.quick_add_task(SimpleNamespace(control=a.quick_task_input))
+        self.assertEqual(self.db.row("SELECT is_today FROM tasks WHERE title='今天就做'")["is_today"],1)
+
+    def test_mainline_switcher_lists_active_mainlines_and_switches(self):
+        a = self.app
+        second = self.db.create_mainline("论文写作")
+        self.db.create_task(second,"写引言")
+        archived = self.db.create_mainline("旧支线")
+        self.db.archive_mainline(archived)
+        switched = []
+        a.activate_mainline = switched.append
+        menu = a._mainline_switcher()
+        labels = [i.content for i in menu.items if i.content]
+        self.assertTrue(any(l.startswith("论文写作 · 1 个待推进") for l in labels))
+        self.assertFalse(any("旧支线" in l for l in labels))
+        self.assertFalse(any(l.startswith("收集箱") for l in labels))
+        current = next(i for i in menu.items if i.checked)
+        self.assertIsNone(current.on_click)
+        next(i for i in menu.items if i.content and i.content.startswith("论文写作")).on_click(None)
+        self.assertEqual(switched,[second])
+
     def test_side_nav_keeps_selected_index_contract(self):
         from flet_app import SideNav
         chosen = []

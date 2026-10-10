@@ -1550,6 +1550,18 @@ class Database(LifeStructure):
             (day,),
         )
 
+    def planned_days_by_task(self) -> dict[int, str]:
+        """Earliest still-planned ledger day from today on, per task."""
+        return {
+            int(row["task_id"]): str(row["day"])
+            for row in self.rows(
+                """SELECT task_id, MIN(entry_date) AS day FROM daily_entries
+                   WHERE state = 'planned' AND entry_date >= ? AND task_id IS NOT NULL
+                   GROUP BY task_id""",
+                (self.today_iso(),),
+            )
+        }
+
     def list_overdue_entries(self, before_day: str) -> list[sqlite3.Row]:
         return self.rows(
             """SELECT de.*, de.task_title_snapshot AS title,

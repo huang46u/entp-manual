@@ -126,15 +126,25 @@ class DesktopE2ERunner:
         return f"主线 M{mainline_id:04d} 已创建、同步并切换"
 
     def _quick_add_task(self) -> str:
-        title = "E2E 一次点击新增任务"
-        self.ui.quick_task_input.value = title
-        self.ui.quick_task_input.on_submit(SimpleNamespace(control=self.ui.quick_task_input))
-        task = next(item for item in self.ui.db.list_tasks(self.ui.current_mid) if item["title"] == title)
+        def add(title: str):
+            self.ui.quick_task_input.value = title
+            self.ui.quick_task_input.on_submit(SimpleNamespace(control=self.ui.quick_task_input))
+            return next(item for item in self.ui.db.list_tasks(self.ui.current_mid) if item["title"] == title)
+
+        # Default: only the mainline, so a jotted task never turns overdue.
+        assert self.ui.quick_task_plan is None
+        unplanned = add("E2E 不安排日期的任务")
+        assert int(unplanned["is_today"]) == 0
+        # Later cases exercise the daily ledger, so they continue with the
+        # task explicitly planned for today.
+        self.ui.quick_task_plan = self.ui.db.today_iso()
+        task = add("E2E 一次点击新增任务")
+        self.ui.quick_task_plan = None
         task_id = int(task["id"])
         assert int(task["is_today"]) == 1
         assert self.ui.markdown.path_for("task", task_id).exists()
         self.context["task_id"] = task_id
-        return f"任务 T{task_id:04d} 已进入当前主线和今日账本"
+        return f"默认只进当前主线；选择「今天」时任务 T{task_id:04d} 进入今日账本"
 
     def _subtask_hierarchy(self) -> str:
         parent_id = int(self.context["task_id"])

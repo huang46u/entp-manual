@@ -59,6 +59,7 @@ from ui_theme import (
     RED,
     SIDEBAR,
     SURFACE,
+    SURFACE_SOFT,
     WIDE_WIDTH,
     surface,
     constrained,
@@ -535,23 +536,17 @@ class EntpFletApp(StructureUI):
             height=50,
             on_submit=self.quick_add_task,
         )
+        # None = no ledger day; otherwise an ISO date. New mainline tasks stay
+        # off the daily ledger unless the user picks a day, so jotting a task
+        # down never makes it overdue tomorrow.
+        self.quick_task_plan: str | None = None
+        self.quick_plan_holder = ft.Container(alignment=ft.Alignment.CENTER)
+        self._refresh_quick_plan()
         self.quick_task_box = ft.Container(
             content=ft.Row(
                 [
                     ft.Container(self.quick_task_input, expand=True),
-                    ft.Container(
-                        content=ft.Row(
-                            [
-                                ft.Icon(ft.Icons.CALENDAR_MONTH_ROUNDED, size=18, color=BLUE),
-                                ft.Text("今天", size=15, color=BLUE),
-                                ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=18, color=MUTED),
-                            ],
-                            spacing=5,
-                            tight=True,
-                        ),
-                        width=92,
-                        alignment=ft.Alignment.CENTER,
-                    ),
+                    self.quick_plan_holder,
                 ],
                 spacing=6,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -1503,7 +1498,15 @@ class EntpFletApp(StructureUI):
                     ft.Column(
                         [
                             ft.Text("当前主线", size=13, weight=ft.FontWeight.W_700, color=BLUE),
-                            ft.Text(str(mainline["name"]), size=26, weight=ft.FontWeight.W_700, color=INK),
+                            ft.Row(
+                                [
+                                    ft.Text(str(mainline["name"]), size=26, weight=ft.FontWeight.W_700, color=INK),
+                                    self._mainline_switcher(),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
                             ft.Text(
                                 str(mainline["vision"] or ""),
                                 size=15,
@@ -1528,6 +1531,65 @@ class EntpFletApp(StructureUI):
         self.detail_holder.content = self._side_column()
         if update:
             self.page.update()
+
+    def _mainline_switcher(self) -> ft.PopupMenuButton:
+        """Switch the single execution mainline without leaving this page.
+
+        Only one mainline is shown while working (goal shielding); the menu
+        just makes the others one click away instead of a trip to the vault.
+        """
+        mainlines = [
+            m for m in self.db.list_mainlines()
+            if str(m["status"]) != "已归档" and str(m["name"]) != "收集箱"
+        ]
+        items: list[ft.PopupMenuItem] = []
+        for mainline in mainlines:
+            mainline_id = int(mainline["id"])
+            stats = self.db.mainline_stats(mainline_id)
+            pending = int(stats["total"] or 0) - int(stats["done"] or 0)
+            items.append(
+                ft.PopupMenuItem(
+                    content=f"{mainline['name']} · {pending} 个待推进",
+                    checked=mainline_id == self.current_mid,
+                    on_click=(
+                        None if mainline_id == self.current_mid
+                        else lambda _, mid=mainline_id: self.activate_mainline(mid)
+                    ),
+                )
+            )
+
+        def open_new_mainline(_) -> None:
+            self.show_view(self.NAV_VAULT)
+            self.open_blank_mainline()
+
+        items += [
+            ft.PopupMenuItem(),
+            ft.PopupMenuItem(content="新建主线", icon=ft.Icons.ADD_ROUNDED, on_click=open_new_mainline),
+            ft.PopupMenuItem(content="打开主线保管箱", icon=ft.Icons.INVENTORY_2_OUTLINED,
+                             on_click=lambda _: self.show_view(self.NAV_VAULT)),
+        ]
+        return ft.PopupMenuButton(
+            content=ft.Container(
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.SWAP_HORIZ_ROUNDED, size=17, color=BLUE),
+                        ft.Text(f"切换主线 · {len(mainlines)}", size=13, weight=ft.FontWeight.W_600, color=BLUE),
+                        ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=17, color=BLUE),
+                    ],
+                    spacing=4,
+                    tight=True,
+                ),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=5),
+                bgcolor=BLUE_SOFT,
+                border_radius=99,
+            ),
+            items=items,
+            tooltip="切换当前执行的主线；其他主线仍留在保管箱，不会同时出现",
+            size_constraints=ft.BoxConstraints(min_width=360, max_width=520),
+            shape=rounded(14),
+            bgcolor=SURFACE,
+            data="mainline-switcher",
+        )
 
     def _side_column(self) -> ft.Column:
         """Right column of the current page: completion calendar + upcoming anchors."""
@@ -1688,6 +1750,7 @@ class EntpFletApp(StructureUI):
         active = [t for t in parents if str(t["status"]) != "完成"]
         completed = [t for t in parents if str(t["status"]) == "完成"]
         self._task_anchors = self.db.anchors_by_task()
+        self._task_plan_days = self.db.planned_days_by_task()
         rows: list[ft.Control] = [
             self._task_promotion_target(
                 ft.Row(
@@ -1933,6 +1996,7 @@ class EntpFletApp(StructureUI):
         if anchors is None:
             anchors = self.db.anchors_by_task()
         linked = anchors.get(task_id, []) if not completed else []
+        planned_day = None if completed else (getattr(self, "_task_plan_days", None) or {}).get(task_id)
         tile = ft.Container(
             content=ft.Row(
                 [
@@ -1969,6 +2033,9 @@ class EntpFletApp(StructureUI):
                         overflow=ft.TextOverflow.ELLIPSIS,
                         expand=True,
                     ),
+                    *([tag(self._day_label(planned_day), color=BLUE if planned_day == date.today().isoformat() else MUTED,
+                           bgcolor=BLUE_SOFT if planned_day == date.today().isoformat() else SURFACE_SOFT,
+                           icon=ft.Icons.CALENDAR_TODAY_OUTLINED)] if planned_day else []),
                     *([self._anchor_badge(linked)] if linked else []),
                     *([tag("正在上方推进", color=GREEN, bgcolor=GREEN_SOFT, icon=ft.Icons.PLAY_ARROW_ROUNDED)]
                       if focused else []),
@@ -5101,11 +5168,86 @@ class EntpFletApp(StructureUI):
         self._sync_markdown()
         self._refresh_task_surface()
 
+    def _day_label(self, day: str) -> str:
+        value = date.fromisoformat(day)
+        gap = (value - date.today()).days
+        return "今天" if gap == 0 else "明天" if gap == 1 else f"{value.month}月{value.day}日"
+
+    def _refresh_quick_plan(self) -> None:
+        plan = self.quick_task_plan
+        if plan and plan < date.today().isoformat():
+            plan = self.quick_task_plan = None  # a remembered day has passed
+        color = BLUE if plan else MUTED
+        face = ft.Container(
+            ft.Row(
+                [
+                    ft.Icon(ft.Icons.CALENDAR_MONTH_ROUNDED if plan else ft.Icons.CALENDAR_TODAY_OUTLINED,
+                            size=18, color=color),
+                    ft.Text(self._day_label(plan) if plan else "不安排日期", size=14, color=color),
+                    ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=18, color=MUTED),
+                ],
+                spacing=5,
+                tight=True,
+            ),
+            padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+            border_radius=10,
+        )
+        today = date.today()
+
+        def choose(day: str | None) -> None:
+            self.quick_task_plan = day
+            self._refresh_quick_plan()
+            self.page.update()
+
+        def picked(event) -> None:
+            value = event.control.value
+            if isinstance(value, datetime):
+                value = (value.astimezone() if value.tzinfo else value).date()
+            if value:
+                choose(value.isoformat())
+
+        def pick_date(_) -> None:
+            self.page.show_dialog(
+                ft.DatePicker(
+                    value=date.fromisoformat(plan) if plan else today,
+                    first_date=today,
+                    last_date=date(today.year + 5, 12, 31),
+                    help_text="新任务加入哪一天的清单",
+                    confirm_text="确定",
+                    cancel_text="取消",
+                    on_change=picked,
+                )
+            )
+
+        def item(label: str, icon, handler, selected: bool) -> ft.PopupMenuItem:
+            return ft.PopupMenuItem(content=label, icon=icon, checked=selected, on_click=handler)
+
+        self.quick_plan_holder.content = ft.PopupMenuButton(
+            content=face,
+            tooltip="新任务加入哪一天的今日清单；不安排则只放在主线里",
+            items=[
+                item("不安排日期", ft.Icons.EVENT_BUSY_OUTLINED, lambda _: choose(None), plan is None),
+                item("今天", ft.Icons.TODAY_ROUNDED, lambda _: choose(today.isoformat()), plan == today.isoformat()),
+                item("明天", ft.Icons.EVENT_ROUNDED, lambda _: choose((today + timedelta(days=1)).isoformat()),
+                     plan == (today + timedelta(days=1)).isoformat()),
+                ft.PopupMenuItem(),
+                item("选择日期…", ft.Icons.CALENDAR_MONTH_OUTLINED, pick_date, False),
+            ],
+            shape=rounded(14),
+            bgcolor=SURFACE,
+            data="quick-plan",
+        )
+
     def quick_add_task(self, event) -> None:
         title = str(event.control.value or "").strip()
         if not title:
             return
-        task_id = self.db.create_task(self.current_mid, title, is_today=True)
+        self._refresh_quick_plan()
+        plan = self.quick_task_plan
+        today_iso = self.db.today_iso()
+        task_id = self.db.create_task(self.current_mid, title, is_today=plan == today_iso)
+        if plan and plan != today_iso:
+            self.db.plan_task_for_day(task_id, plan, source="quick")
         # 新建父任务后，紧接着输入并按 Shift+Enter 就能创建它的子任务。
         self._subtask_shortcut_parent_id = task_id
         self._sync_markdown()
