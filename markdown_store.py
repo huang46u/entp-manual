@@ -26,6 +26,7 @@ KIND_INFO = {
     "recovery": ("恢复", "R"),
     "worry": ("担忧", "Q"),
     "activity": ("自主活动", "C"),
+    "note": ("笔记", "N"),
 }
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -105,6 +106,19 @@ class MarkdownStore:
             for path in (document, assets):
                 if not path.resolve().is_relative_to(root):
                     raise ValueError("任务文件路径超出 Markdown 工作区")
+            document.unlink(missing_ok=True)
+            if assets.exists():
+                shutil.rmtree(assets)
+
+    def remove_note_documents(self, note_ids: Iterable[int]) -> None:
+        """Remove deleted notes' documents and pasted images."""
+        root = self.root.resolve()
+        for note_id in note_ids:
+            document = self.path_for("note", note_id)
+            assets = self.root / "_assets" / "note" / f"N{int(note_id):04d}"
+            for path in (document, assets):
+                if not path.resolve().is_relative_to(root):
+                    raise ValueError("笔记文件路径超出 Markdown 工作区")
             document.unlink(missing_ok=True)
             if assets.exists():
                 shutil.rmtree(assets)
@@ -311,6 +325,7 @@ class MarkdownStore:
         mainlines = db.list_mainlines()
         tasks = db.list_tasks()
         thoughts = db.list_thoughts()
+        notes = db.list_notes()
         logs = db.rows(
             """SELECT l.*, th.title AS thought_title, th.mainline_id,
                       m.name AS mainline_name
@@ -359,6 +374,12 @@ class MarkdownStore:
                 "execution",
                 lambda current=row: self._sync_execution(current),
             )
+        for row in notes:
+            sync_one(
+                self.path_for("note", int(row["id"])),
+                "note",
+                lambda current=row: self._sync_note(current),
+            )
 
         for kind, table in (("experiment", "experiments"), ("anchor", "external_anchors"),
                             ("waiting", "waiting_items"), ("recovery", "recovery_sessions"),
@@ -391,7 +412,7 @@ class MarkdownStore:
             )
 
         try:
-            self._write_indexes(mainlines, tasks, thoughts, logs, daily_dates)
+            self._write_indexes(mainlines, tasks, thoughts, logs, daily_dates, notes)
         except OSError as error:
             if not continue_on_error:
                 raise
@@ -506,6 +527,32 @@ _以上为程序同步区，请在下方自由记录。_"""
 - 下次改进：
 """
         return self._write_synced("task", row["id"], system, user)
+
+    def _sync_note(self, row) -> Path:
+        title = row["title"] or "未命名笔记"
+        frontmatter = self._frontmatter(
+            (
+                ("entp_id", f"N{row['id']:04d}"),
+                ("type", "note"),
+                ("title", row["title"]),
+                ("mainline", row["mainline_name"]),
+                ("task", row["task_title"] or ""),
+                ("created_at", row["created_at"]),
+                ("updated_at", row["updated_at"]),
+            )
+        )
+        system = f"""{frontmatter}
+
+# {title}
+
+**所属主线：** {row['mainline_name']}  
+**关联任务：** {row['task_title'] or '无'}  
+**更新于：** {str(row['updated_at'])[:16].replace('T', ' ')}
+
+{row['body'] or '_还没有内容。_'}
+
+_以上为程序同步区，请在应用中编辑笔记；下方可自由补充。_"""
+        return self._write_synced("note", row["id"], system, "")
 
     def _sync_structure(self, db, kind, row) -> Path:
         labels = {"title":"名称", "source":"真实来源", "kind":"类型", "anchor_date":"日期",
@@ -721,7 +768,7 @@ _以上为程序同步区。任务后续改名或转移主线，不会改写这�
                 lines.append(f"- {label}：{'未记录' if value is None else value if key=='pressure' else '是' if value else '否'}")
         return "\n".join(lines) or "- 没有结构或自评记录；缺失数据保持为空。"
 
-    def _write_indexes(self, mainlines, tasks, thoughts, logs, daily_dates) -> None:
+    def _write_indexes(self, mainlines, tasks, thoughts, logs, daily_dates, notes=()) -> None:
         groups = (
             ("主线", "mainline", mainlines, lambda row: row["name"]),
             ("任务", "task", tasks, lambda row: f"{row['title']} · {row['status']}"),
@@ -732,9 +779,15 @@ _以上为程序同步区。任务后续改名或转移主线，不会改写这�
                 logs,
                 lambda row: f"{row['thought_title']} · {row['created_at'][:16]}",
             ),
+            (
+                "笔记",
+                "note",
+                notes,
+                lambda row: f"{row['title'] or '未命名笔记'} · {row['mainline_name']} · {row['updated_at'][:10]}",
+            ),
         )
         root_lines = ["# ENTP 自强手册 · Markdown 文档", ""]
-        root_lines.append("每个主线、任务、思路、单次执行记录和日期账本都有独立文档。")
+        root_lines.append("每个主线、任务、思路、笔记、单次执行记录和日期账本都有独立文档。")
         root_lines.append("")
         for directory, kind, rows, labeler in groups:
             index_lines = [f"# {directory}", "", "_此索引由程序自动生成。_", ""]

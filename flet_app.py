@@ -40,7 +40,7 @@ from backup_service import (
 from app_version import APP_VERSION, INTERNAL_DEMO_BUILD
 from database import Database
 from markdown_store import MarkdownStore
-from structure_ui import StructureUI
+from structure_ui import StructureUI, card, fact_row
 from ui_theme import (
     AMBER,
     AMBER_SOFT,
@@ -64,6 +64,7 @@ from ui_theme import (
     surface,
     constrained,
     group_label,
+    panel_header,
     rounded,
     tag,
     tool_button,
@@ -1597,6 +1598,7 @@ class EntpFletApp(StructureUI):
         return ft.Column(
             [
                 self.calendar_holder,
+                self._notes_card(),
                 self._upcoming_anchor_card(int(focus["id"]) if focus else None),
             ],
             spacing=14,
@@ -1722,6 +1724,8 @@ class EntpFletApp(StructureUI):
                             lambda _: self.open_experiment(task_id=int(focus["id"]))),
                 tool_button("实验历史", ft.Icons.HISTORY_ROUNDED,
                             lambda _: self.open_task_experiments(int(focus["id"]))),
+                tool_button("写笔记", ft.Icons.EDIT_NOTE_ROUNDED,
+                            lambda _: self.new_note(task_id=int(focus["id"]))),
             ]
         record_tools.append(
             tool_button("添加外部锚点", ft.Icons.EVENT_OUTLINED, lambda _: self.open_anchor(
@@ -2252,6 +2256,11 @@ class EntpFletApp(StructureUI):
             self.close_task_detail()
             self.request_delete_task(task_id)
 
+        def write_note(_) -> None:
+            save_fields(None)
+            self.close_task_detail()
+            self.new_note(task_id=task_id)
+
         def dismissed(_) -> None:
             save_fields(None)
             self._finish_task_detail_state()
@@ -2327,6 +2336,12 @@ class EntpFletApp(StructureUI):
                         icon_color=BLUE if focused else MUTED,
                         on_click=make_focus,
                         disabled=completed or is_subtask,
+                    ),
+                    ft.IconButton(
+                        ft.Icons.EDIT_NOTE_ROUNDED,
+                        tooltip="为这个任务写笔记",
+                        icon_color=MUTED,
+                        on_click=write_note,
                     ),
                     ft.IconButton(
                         ft.Icons.DELETE_OUTLINE_ROUNDED,
@@ -5399,6 +5414,359 @@ class EntpFletApp(StructureUI):
         self._finish_task_detail_state()
         self._close_dialog()
 
+    # ---- 课题笔记 ----------------------------------------------------------
+
+    NOTE_PREVIEW_LIMIT = 5
+
+    def _note_row(self, note, *, on_open=None) -> ft.Control:
+        note_id = int(note["id"])
+        meta = str(note["updated_at"] or "")[:16].replace("T", " ")
+        if note["task_title"]:
+            meta += f" · 关联：{note['task_title']}"
+        return fact_row(
+            ft.Icons.DESCRIPTION_OUTLINED,
+            str(note["title"] or "未命名笔记"),
+            meta=meta,
+            on_click=lambda _: (on_open or self.open_note)(note_id),
+        )
+
+    def _notes_card(self) -> ft.Control:
+        """Notes of the current mainline, most recently updated first."""
+        notes = self.db.list_notes(self.current_mid)
+        rows: list[ft.Control] = [
+            self._note_row(note) for note in notes[: self.NOTE_PREVIEW_LIMIT]
+        ]
+        if not rows:
+            rows.append(ft.Container(
+                ft.Text("还没有笔记。记录这条主线上的进展、读到的要点和问题。", size=13, color=MUTED),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+            ))
+        controls: list[ft.Control] = [
+            panel_header(
+                "课题笔记",
+                f"共 {len(notes)} 篇 · 最近更新在前" if notes else "记录这条主线的进展",
+                icon=ft.Icons.EDIT_NOTE_ROUNDED,
+                trailing=[tool_button("新建", ft.Icons.ADD_ROUNDED, lambda _: self.new_note(), color=BLUE)],
+            ),
+            ft.Column(rows, spacing=2),
+        ]
+        if len(notes) > self.NOTE_PREVIEW_LIMIT:
+            controls.append(ft.Row([
+                tool_button(f"查看全部 {len(notes)} 篇", ft.Icons.LIST_ROUNDED,
+                            lambda _: self.open_notes_dialog(self.current_mid), color=BLUE),
+            ]))
+        return card(controls)
+
+    def open_notes_dialog(self, mainline_id: int) -> None:
+        mainline = next(m for m in self.db.list_mainlines() if int(m["id"]) == mainline_id)
+        notes = self.db.list_notes(mainline_id)
+
+        def open_one(note_id: int) -> None:
+            self._close_dialog()
+            self.open_note(note_id)
+
+        def create(_) -> None:
+            self._close_dialog()
+            self.new_note()
+
+        controls: list[ft.Control] = [self._note_row(n, on_open=open_one) for n in notes]
+        if not controls:
+            controls.append(ft.Text("这条主线还没有笔记。", size=14, color=MUTED))
+        self.page.show_dialog(ft.AlertDialog(
+            title=ft.Text(f"{mainline['name']} · 笔记", size=22, weight=ft.FontWeight.W_700),
+            content=ft.Column(controls, spacing=2, width=560, scroll=ft.ScrollMode.AUTO),
+            actions=[
+                ft.TextButton("新建笔记", icon=ft.Icons.ADD_ROUNDED, on_click=create),
+                ft.FilledButton("关闭", on_click=lambda _: self._close_dialog()),
+            ],
+            shape=rounded(20),
+            scrollable=True,
+        ))
+        self.page.update()
+
+    def new_note(self, task_id: int | None = None) -> None:
+        mainline_id = self.current_mid
+        if task_id is not None:
+            task = self.db.get_task(task_id)
+            if task is None:
+                return
+            mainline_id = int(task["mainline_id"])
+        note_id = self.db.create_note(mainline_id, task_id=task_id)
+        self.open_note(note_id, is_new=True)
+
+    def open_note(self, note_id: int, *, is_new: bool = False) -> None:
+        if self._closed or self._exiting:
+            return
+        note = self.db.get_note(note_id)
+        if note is None:
+            return
+        self._active_editor_dialog = "note"
+        self.page.show_dialog(self._note_dialog(note, is_new=is_new))
+        self.page.update()
+
+    def _refresh_notes_surface(self) -> None:
+        if self._closed or self._exiting:
+            return
+        if self.active_index == self.NAV_CURRENT:
+            self.detail_holder.content = self._side_column()
+        self.page.update()
+
+    def _finish_note_dialog(self, note_id: int, *, is_new: bool) -> None:
+        self._active_editor_dialog = None
+        note = self.db.get_note(note_id)
+        # 新建后什么都没写就关闭，不留下空笔记。已有笔记即使被清空也保留，
+        # 因为它的 Markdown 文件下方可能还有用户在外部写的内容。
+        if is_new and note is not None and not str(note["title"]).strip() and not str(note["body"]).strip():
+            self.db.delete_note(note_id)
+            self.markdown.remove_note_documents([note_id])
+        self._refresh_notes_surface()
+
+    def _note_dialog(self, note, *, is_new: bool = False) -> ft.AlertDialog:
+        note_id = int(note["id"])
+        mainline_id = int(note["mainline_id"])
+        state = {"body": str(note["body"] or ""), "autosave_revision": 0, "closed": False}
+        last_saved = {"title": str(note["title"] or ""), "body": state["body"]}
+        title_field = ft.TextField(
+            value=last_saved["title"],
+            hint_text="笔记标题，例如：读完第 3 节 / 复现进展",
+            border=ft.InputBorder.NONE,
+            text_size=22,
+            text_style=ft.TextStyle(weight=ft.FontWeight.W_700, color=INK),
+            content_padding=0,
+            multiline=True,
+            min_lines=1,
+            max_lines=None,
+            autofocus=is_new,
+        )
+        document_path = self.markdown.path_for("note", note_id)
+        image_directory, image_link_prefix = self.markdown.editor_image_context("note", note_id)
+        body_editor = build_markdown_editor(
+            value=state["body"],
+            placeholder="记录进展、读到的要点、遇到的问题和下一步……",
+            document_directory=str(document_path.parent.resolve()),
+            image_directory=str(image_directory.resolve()),
+            image_link_prefix=image_link_prefix,
+            text_size=16,
+            expand=True,
+            autofocus=not is_new,
+        )
+        save_status = ft.Text("已自动保存", size=12, color=MUTED)
+
+        def save_fields(_=None) -> None:
+            if self._closed or self._exiting or self.db.get_note(note_id) is None:
+                return
+            title = " ".join(str(title_field.value or "").split())
+            body = str(state["body"])
+            if title != last_saved["title"] or body != last_saved["body"]:
+                self.db.update_note(note_id, title=title, body=body)
+                self._sync_markdown()
+                last_saved["title"] = title
+                last_saved["body"] = body
+            save_status.value = "已自动保存"
+
+        async def delayed_autosave(revision: int) -> None:
+            await asyncio.sleep(0.45)
+            if revision != state["autosave_revision"] or state["closed"]:
+                return
+            save_fields()
+            self.page.update()
+
+        def schedule_autosave(event) -> None:
+            if getattr(event, "control", None) is body_editor:
+                state["body"] = str(event.data)
+            state["autosave_revision"] += 1
+            save_status.value = "正在自动保存…"
+            self.page.update()
+            self.page.run_task(delayed_autosave, state["autosave_revision"])
+
+        def finish() -> None:
+            # 关闭按钮和对话框的 dismiss 事件可能先后触发，只收尾一次。
+            if state["closed"]:
+                return
+            state["closed"] = True
+            save_fields()
+            self._finish_note_dialog(note_id, is_new=is_new)
+
+        def close(_) -> None:
+            finish()
+            self._close_dialog()
+
+        def delete(_) -> None:
+            save_fields()
+            state["closed"] = True
+            self._active_editor_dialog = None
+            self._close_dialog()
+            self.request_delete_note(note_id)
+
+        def paste_error(event) -> None:
+            details = str(getattr(event, "data", "") or "未知的剪贴板错误")
+            self._write_runtime_error("笔记粘贴图片失败", details)
+            self._notify_error("图片粘贴失败，请重新复制图片后再试。")
+
+        title_field.on_blur = save_fields
+        title_field.on_change = schedule_autosave
+        body_editor.on_blur = save_fields
+        body_editor.on_change = schedule_autosave
+        configure_markdown_editor_errors(
+            body_editor,
+            on_paste_error=paste_error,
+            on_render_error=lambda event: self._handle_editor_render_error("笔记", event),
+        )
+
+        def link_label(task_title) -> str:
+            return f"关联任务：{task_title}" if task_title else "关联任务：无"
+
+        link_text = ft.Text(link_label(note["task_title"]), size=13, color=INK_SOFT,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+
+        def link_items(selected) -> list[ft.PopupMenuItem]:
+            items = [ft.PopupMenuItem(content="不关联任务", checked=selected is None,
+                                      on_click=lambda _: choose_task(None))]
+            for task in self.db.list_tasks(mainline_id):
+                tid = int(task["id"])
+                label = str(task["title"])
+                if task["parent_task_id"] is not None:
+                    label = f"　└ {label}"
+                if str(task["status"]) == "完成":
+                    label += "（已完成）"
+                items.append(ft.PopupMenuItem(content=label, checked=tid == selected,
+                                              on_click=lambda _, t=tid: choose_task(t)))
+            return items
+
+        def choose_task(task_id) -> None:
+            save_fields()
+            self.db.update_note(note_id, task_id=task_id)
+            self._sync_markdown()
+            current = self.db.get_note(note_id)
+            link_text.value = link_label(current["task_title"] if current else None)
+            link_menu.items = link_items(task_id)
+            self.page.update()
+
+        link_menu = ft.PopupMenuButton(
+            content=ft.Container(
+                ft.Row([
+                    ft.Icon(ft.Icons.LINK_ROUNDED, size=15, color=MUTED),
+                    link_text,
+                    ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=17, color=MUTED),
+                ], spacing=4, tight=True),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=5),
+                bgcolor=SURFACE_SOFT,
+                border_radius=99,
+            ),
+            items=link_items(note["task_id"]),
+            tooltip="把笔记关联到这条主线下的某个任务",
+            size_constraints=ft.BoxConstraints(min_width=280, max_width=460, max_height=360),
+            shape=rounded(14),
+            bgcolor=SURFACE,
+        )
+
+        header = ft.Container(
+            content=ft.Row(
+                [
+                    pill("笔记", icon=ft.Icons.EDIT_NOTE_ROUNDED),
+                    ft.Text(f"主线：{note['mainline_name']}", size=13, color=MUTED,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    link_menu,
+                    ft.Container(expand=True),
+                    ft.IconButton(ft.Icons.DELETE_OUTLINE_ROUNDED, tooltip="删除笔记",
+                                  icon_color=RED, on_click=delete),
+                    ft.IconButton(ft.Icons.CLOSE_ROUNDED, tooltip="关闭笔记",
+                                  icon_color=MUTED, on_click=close),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.Padding.only(left=16, right=12, top=10, bottom=10),
+        )
+        body = ft.Container(
+            content=ft.Column([title_field, body_editor], spacing=10, expand=True),
+            padding=ft.Padding.symmetric(horizontal=24, vertical=20),
+            expand=True,
+        )
+        footer = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Row([ft.Icon(ft.Icons.SAVE_OUTLINED, size=17, color=MUTED), save_status], spacing=6),
+                    ft.Text(
+                        "可直接粘贴文字或图片"
+                        if isinstance(body_editor, FletQuillEditor)
+                        else "兼容编辑模式：支持 Markdown 文字编辑",
+                        size=12,
+                        color=MUTED,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            padding=ft.Padding.only(left=16, right=20, top=8, bottom=10),
+        )
+        return ft.AlertDialog(
+            modal=False,
+            content=ft.Column(
+                [header, ft.Divider(height=1, color=LINE), body, ft.Divider(height=1, color=LINE), footer],
+                spacing=0,
+                width=720,
+                height=600,
+            ),
+            content_padding=0,
+            inset_padding=24,
+            bgcolor=SURFACE,
+            shape=rounded(20),
+            elevation=18,
+            shadow_color="#33000000",
+            barrier_color="#2E111827",
+            on_dismiss=lambda _: finish(),
+            data="note-dialog",
+        )
+
+    def request_delete_note(self, note_id: int) -> None:
+        note = self.db.get_note(note_id)
+        if note is None:
+            self._refresh_notes_surface()
+            return
+
+        def remove() -> None:
+            self.db.delete_note(note_id)
+            self.markdown.remove_note_documents([note_id])
+            self._sync_markdown()
+            self._refresh_notes_surface()
+
+        if not str(note["title"]).strip() and not str(note["body"]).strip():
+            remove()
+            return
+
+        def cancel(_=None) -> None:
+            self._close_dialog()
+            self._refresh_notes_surface()
+
+        def confirm(_=None) -> None:
+            self._close_dialog()
+            backup = self.db.path.parent / "backups" / f"删除笔记前_{note_id}_{time.time_ns()}.entp.zip"
+            try:
+                if not self._sync_markdown():
+                    self._notify_error("文档尚未保存，已取消删除")
+                    return
+                export_workspace(self.db, self.markdown.root, backup)
+            except (OSError, BackupError) as error:
+                self._notify_error(f"备份失败，未删除笔记：{error}")
+                return
+            remove()
+            self._notify_success("笔记已删除；删除前已保存完整备份")
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("删除笔记？"),
+            content=ft.Text(
+                f"将删除“{note['title'] or '未命名笔记'}”及其中粘贴的图片。"
+                "删除前会自动保存完整备份，可通过“导入备份”恢复。"
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=cancel),
+                ft.FilledButton("删除笔记", on_click=confirm, style=ft.ButtonStyle(bgcolor=RED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
+        self.page.update()
+
     def set_focus_task(self, task_id: int) -> None:
         self.db.set_focus_task(task_id)
         self._sync_markdown()
@@ -6008,6 +6376,7 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("ENTP_QA_TASK_DETAIL") == "1",
     )
     parser.add_argument("--qa-markdown")
+    parser.add_argument("--qa-note", action="store_true", help="Open the newest note of the current mainline")
     parser.add_argument("--qa-expand-task", type=int)
     parser.add_argument("--qa-add-subtask", type=int)
     parser.add_argument("--qa-hide-focus", action="store_true")
@@ -6081,6 +6450,7 @@ def main() -> None:
                     args.qa_compact,
                     args.qa_task_detail,
                     args.qa_markdown,
+                    args.qa_note,
                     args.qa_expand_task,
                     args.qa_add_subtask,
                     args.qa_hide_focus,
@@ -6238,6 +6608,12 @@ def main() -> None:
                 )
                 if target is not None:
                     ui.select_task(int(target["id"]))
+            if args.qa_note:
+                await asyncio.sleep(0.4)
+                notes = ui.db.list_notes(ui.current_mid)
+                if notes:
+                    ui.open_note(int(notes[0]["id"]))
+                await asyncio.sleep(0.5)
             if args.qa_markdown:
                 markdown_kind, raw_id = args.qa_markdown.split(":", 1)
                 ui.open_markdown(markdown_kind, int(raw_id))

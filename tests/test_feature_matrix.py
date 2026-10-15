@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import markdown_store as markdown_module
 from database import Database
+from life_structure import STRUCTURE_TABLES
 from markdown_store import MarkdownStore, SYSTEM_END, SYSTEM_START
 
 
@@ -61,8 +62,10 @@ class StartupSchemaTests(TemporaryDatabaseTestCase):
                 "daily_entries",
                 "task_events",
                 "daily_notes",
+                "notes",
                 "app_settings",
-            },
+            }
+            | STRUCTURE_TABLES,
         )
         self.assertIn(self.db.current_mainline_id(), self.active_mainlines())
 

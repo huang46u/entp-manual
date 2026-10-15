@@ -209,6 +209,17 @@ class Database(LifeStructure):
                 updated_at TEXT NOT NULL
             );
 
+            -- 课题笔记：属于一条主线，可选关联到该主线下的某个任务。
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mainline_id INTEGER NOT NULL REFERENCES mainlines(id) ON DELETE CASCADE,
+                task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+                title TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL DEFAULT ''
@@ -232,6 +243,8 @@ class Database(LifeStructure):
                 ON daily_entries(task_id, entry_date DESC);
             CREATE INDEX IF NOT EXISTS idx_task_events_date
                 ON task_events(event_date, occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_notes_mainline_updated
+                ON notes(mainline_id, updated_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_one_primary_per_day
                 ON daily_entries(entry_date) WHERE is_primary = 1;
             """
@@ -1070,6 +1083,87 @@ class Database(LifeStructure):
                WHERE t.id = ?""",
             (task_id,),
         )
+
+    _NOTE_SELECT = """SELECT n.*, m.name AS mainline_name, t.title AS task_title
+               FROM notes n JOIN mainlines m ON m.id = n.mainline_id
+               LEFT JOIN tasks t ON t.id = n.task_id"""
+
+    def create_note(
+        self,
+        mainline_id: int,
+        *,
+        title: str = "",
+        body: str = "",
+        task_id: int | None = None,
+    ) -> int:
+        if not self.row("SELECT 1 FROM mainlines WHERE id = ?", (mainline_id,)):
+            raise ValueError("主线不存在")
+        if task_id is not None and self.get_task(task_id) is None:
+            raise ValueError("任务不存在")
+        now = self.local_timestamp()
+        with self.conn:
+            cur = self.conn.execute(
+                """INSERT INTO notes(mainline_id, task_id, title, body, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (mainline_id, task_id, " ".join(title.split()), body.strip(), now, now),
+            )
+        return int(cur.lastrowid)
+
+    def get_note(self, note_id: int) -> sqlite3.Row | None:
+        return self.row(self._NOTE_SELECT + " WHERE n.id = ?", (note_id,))
+
+    def list_notes(
+        self, mainline_id: int | None = None, *, task_id: int | None = None
+    ) -> list[sqlite3.Row]:
+        where: list[str] = []
+        params: list[Any] = []
+        if mainline_id is not None:
+            where.append("n.mainline_id = ?")
+            params.append(mainline_id)
+        if task_id is not None:
+            where.append("n.task_id = ?")
+            params.append(task_id)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        return self.rows(
+            self._NOTE_SELECT + clause + " ORDER BY n.updated_at DESC, n.id DESC", params
+        )
+
+    _UNSET: Any = object()
+
+    def update_note(
+        self,
+        note_id: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        task_id: Any = _UNSET,
+    ) -> None:
+        note = self.get_note(note_id)
+        if note is None:
+            raise ValueError("笔记不存在")
+        changes: dict[str, Any] = {}
+        if title is not None:
+            # 标题保持单段文本，方便列表展示与搜索。
+            changes["title"] = " ".join(title.split())
+        if body is not None:
+            changes["body"] = body.strip()
+        if task_id is not self._UNSET:
+            if task_id is not None and self.get_task(task_id) is None:
+                raise ValueError("任务不存在")
+            changes["task_id"] = task_id
+        changes = {k: v for k, v in changes.items() if note[k] != v}
+        if not changes:
+            return
+        changes["updated_at"] = self.local_timestamp()
+        with self.conn:
+            self.conn.execute(
+                f"UPDATE notes SET {', '.join(k + ' = ?' for k in changes)} WHERE id = ?",
+                (*changes.values(), note_id),
+            )
+
+    def delete_note(self, note_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
 
     def delete_task(self, task_id: int) -> list[int]:
         """Delete live tasks while preserving dated facts and execution history."""
